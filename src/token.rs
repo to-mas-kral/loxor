@@ -1,5 +1,18 @@
-#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
+pub struct Token<'l> {
+    pub typ: TokenType,
+    pub lexeme: &'l str,
+    pub line: usize,
+}
+
+impl<'l> Token<'l> {
+    pub fn new(typ: TokenType, lexeme: &'l str, line: usize) -> Token<'l> {
+        Token { typ, lexeme, line }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum TokenType {
     // Single-character tokens.
     LeftParen,
@@ -49,4 +62,7 @@ pub enum TokenType {
 
     Error,
     Eof,
+
+    Whitespace,
+    Newline,
 }
