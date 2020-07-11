@@ -1,11 +1,13 @@
+use std::iter::Peekable;
 use std::str::Chars;
 
 use crate::token::{Token, TokenType};
 
+type Text<'t> = Peekable<Chars<'t>>;
+
 pub struct Lexer {
     line: usize,
 
-    text_len: usize,
     token_len: usize,
 }
 
@@ -13,8 +15,6 @@ impl Lexer {
     pub fn new() -> Lexer {
         Lexer {
             line: 1,
-
-            text_len: 0,
             token_len: 0,
         }
     }
@@ -26,120 +26,101 @@ impl Lexer {
     DIGIT          → "0" ... "9" ; */
 
     pub fn next_token<'short: 'l, 'l>(&mut self, _text: &'l str) -> Option<Token<'l>> {
-        let text = _text.as_bytes();
-        self.text_len = text.len();
-        self.token_len = 0;
+        let mut text: Text<'l> = _text.chars().peekable();
 
+        self.token_len = 0;
         let typ: TokenType;
 
-        match self.next(text) {
+        match self.next(&mut text) {
             Some(c) => {
                 match c {
-                    b'(' => typ = TokenType::LeftParen,
-                    b')' => typ = TokenType::RightParen,
-                    b'{' => typ = TokenType::LeftBrace,
-                    b'}' => typ = TokenType::RightBrace,
-                    b',' => typ = TokenType::Comma,
-                    b'.' => typ = TokenType::Dot,
-                    b'-' => typ = TokenType::Minus,
-                    b'+' => typ = TokenType::Plus,
-                    b';' => typ = TokenType::Semicolon,
-                    b'/' => typ = TokenType::Slash,
-                    b'*' => typ = TokenType::Star,
-                    b'!' => {
-                        if self.check(text, b'=') {
+                    '(' => typ = TokenType::LeftParen,
+                    ')' => typ = TokenType::RightParen,
+                    '{' => typ = TokenType::LeftBrace,
+                    '}' => typ = TokenType::RightBrace,
+                    ',' => typ = TokenType::Comma,
+                    '.' => typ = TokenType::Dot,
+                    '-' => typ = TokenType::Minus,
+                    '+' => typ = TokenType::Plus,
+                    ';' => typ = TokenType::Semicolon,
+                    '/' => typ = TokenType::Slash,
+                    '*' => typ = TokenType::Star,
+                    '!' => {
+                        if self.advance_if(&mut text, '=') {
                             typ = TokenType::BangEqual
                         } else {
                             typ = TokenType::Bang
                         }
                     }
-                    b'=' => {
-                        if self.check(text, b'=') {
+                    '=' => {
+                        if self.advance_if(&mut text, '=') {
                             typ = TokenType::EqualEqual
                         } else {
                             typ = TokenType::Equal
                         }
                     }
-                    b'>' => {
-                        if self.check(text, b'=') {
+                    '>' => {
+                        if self.advance_if(&mut text, '=') {
                             typ = TokenType::GreaterEqual
                         } else {
                             typ = TokenType::Greater
                         }
                     }
-                    b'<' => {
-                        if self.check(text, b'=') {
+                    '<' => {
+                        if self.advance_if(&mut text, '=') {
                             typ = TokenType::LessEqual
                         } else {
                             typ = TokenType::Less
                         }
                     }
-                    b'\n' => {
+                    '\n' => {
                         typ = TokenType::Newline;
                         self.line += 1;
                     }
-                    b' ' => {
+                    ' ' => {
                         typ = TokenType::Whitespace;
-                        self.consume_while(text, |c| c == b' ');
+                        self.consume_while(&mut text, |c| c == ' ');
                     }
-                    b'\t' => {
+                    '\t' => {
                         typ = TokenType::Whitespace;
-                        self.consume_while(text, |c| c == b'\t');
+                        self.consume_while(&mut text, |c| c == '\t');
                     }
                     _ => unimplemented!(),
                 };
                 let lexeme: &str = &_text[..self.token_len];
-                let ret: Token<'l> = Token::new(typ, lexeme, self.line);
+                let ret: Token = Token::new(typ, lexeme, self.line);
                 return Some(ret);
             }
             None => None,
         }
     }
 
-    fn next(&mut self, text: &[u8]) -> Option<u8> {
-        match self.token_len < self.text_len {
-            true => {
-                let ret = Some(text[self.token_len]);
-                self.token_len += 1;
-                ret
+    fn next(&mut self, text: &mut Text) -> Option<char> {
+        self.token_len += 1;
+        text.next()
+    }
+
+    fn advance_if(&mut self, text: &mut Text, ch: char) -> bool {
+        match text.peek() {
+            Some(c) if *c == ch => {
+                self.next(text);
+                true
             }
-            false => None,
+            _ => false,
         }
     }
 
-    fn check(&mut self, text: &[u8], ch: u8) -> bool {
-        match self.token_len < self.text_len {
-            true => {
-                if ch == text[self.token_len] {
-                    self.token_len += 1;
-                    true
-                } else {
-                    false
+    fn consume_while(&mut self, text: &mut Text, predicate: fn(char) -> bool) {
+        loop {
+            match text.peek() {
+                Some(c) if predicate(*c) => {
+                    self.next(text);
                 }
-            }
-            false => false,
-        }
-    }
-
-    fn consume_while(&mut self, text: &[u8], predicate: fn(u8) -> bool) {
-        while self.token_len < self.text_len {
-            let next_char = text[self.token_len];
-            if predicate(next_char) {
-                self.token_len += 1;
-                continue;
-            } else {
-                break;
+                _ => return,
             }
         }
     }
 }
-
-/*  pub fn peek_1(&mut self) -> Option<u8> {
-    match self.token_len < self.text_len {
-        true => Some(self.text[self.token_len + 1]),
-        false => None,
-    }
-}  */
 
 mod test {
     use crate::lexer::{Lexer, Token};
