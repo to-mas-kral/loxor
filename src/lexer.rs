@@ -1,9 +1,18 @@
-use std::iter::Peekable;
-use std::str::Chars;
+use std::{iter::Peekable, str::Chars};
 
 use crate::token::{Token, TokenType};
 
+mod test;
+
 type Text<'t> = Peekable<Chars<'t>>;
+
+/*
+ NUMBER      → DIGIT+ ( "." DIGIT+ )? ;
+ STRING         → "\"" <any char except "\"">* "\"" ;
+ IDENTIFIER     → ALPHA ( ALPHA | DIGIT )* ;
+ ALPHA          → "a" ... "z" | "A" ... "Z" | "_" ;
+ DIGIT          → "0" ... "9" ;
+*/
 
 pub struct Lexer {
     line: usize,
@@ -18,12 +27,6 @@ impl Lexer {
             token_len: 0,
         }
     }
-
-    /* NUMBER      → DIGIT+ ( "." DIGIT+ )? ;
-    STRING         → "\"" <any char except "\"">* "\"" ;
-    IDENTIFIER     → ALPHA ( ALPHA | DIGIT )* ;
-    ALPHA          → "a" ... "z" | "A" ... "Z" | "_" ;
-    DIGIT          → "0" ... "9" ; */
 
     pub fn next_token<'short: 'l, 'l>(&mut self, _text: &'l str) -> Option<Token<'l>> {
         let mut text: Text<'l> = _text.chars().peekable();
@@ -43,7 +46,14 @@ impl Lexer {
                     '-' => typ = TokenType::Minus,
                     '+' => typ = TokenType::Plus,
                     ';' => typ = TokenType::Semicolon,
-                    '/' => typ = TokenType::Slash,
+                    '/' => {
+                        if self.advance_if(&mut text, '/') {
+                            typ = TokenType::Comment;
+                            self.consume_while(&mut text, |c| c != '\n');
+                        } else {
+                            typ = TokenType::Slash;
+                        }
+                    }
                     '*' => typ = TokenType::Star,
                     '!' => {
                         if self.advance_if(&mut text, '=') {
@@ -85,6 +95,17 @@ impl Lexer {
                         typ = TokenType::Whitespace;
                         self.consume_while(&mut text, |c| c == '\t');
                     }
+                    c if Lexer::is_alpha(c) => {
+                        typ = self.identifier_or_keyword(&mut text, c);
+                    }
+                    c if c.is_ascii_digit() => {
+                        typ = TokenType::Number;
+                        self.number(&mut text);
+                    }
+                    '\"' => {
+                        typ = TokenType::String;
+                        self.string(&mut text);
+                    }
                     _ => unimplemented!(),
                 };
                 let lexeme: &str = &_text[..self.token_len];
@@ -95,11 +116,21 @@ impl Lexer {
         }
     }
 
+    #[inline]
     fn next(&mut self, text: &mut Text) -> Option<char> {
         self.token_len += 1;
         text.next()
     }
 
+    #[inline]
+    fn peek_2(&mut self, _text: &mut Text) -> Option<char> {
+        let mut cloned = _text.clone();
+
+        cloned.next()?;
+        cloned.next()
+    }
+
+    #[inline]
     fn advance_if(&mut self, text: &mut Text, ch: char) -> bool {
         match text.peek() {
             Some(c) if *c == ch => {
@@ -110,97 +141,105 @@ impl Lexer {
         }
     }
 
+    #[inline]
     fn consume_while(&mut self, text: &mut Text, predicate: fn(char) -> bool) {
         loop {
             match text.peek() {
                 Some(c) if predicate(*c) => {
+                    if *c == '\n' {
+                        self.line += 1;
+                    }
                     self.next(text);
                 }
                 _ => return,
             }
         }
     }
-}
 
-mod test {
-    use crate::lexer::{Lexer, Token};
-    use crate::token::TokenType::*;
+    #[inline]
+    fn identifier_or_keyword(&mut self, text: &mut Text, first: char) -> TokenType {
+        match first {
+            'a' => self.check_keyword(text, "nd", TokenType::And),
+            'c' => self.check_keyword(text, "lass", TokenType::Class),
+            'e' => self.check_keyword(text, "lse", TokenType::Else),
+            'f' => match self.next(text) {
+                Some(c) => match c {
+                    'a' => self.check_keyword(text, "lse", TokenType::False),
+                    'o' => self.check_keyword(text, "r", TokenType::For),
+                    'u' => self.check_keyword(text, "n", TokenType::Fun),
+                    _ => self.finish_identifier(text),
+                },
+                _ => self.finish_identifier(text),
+            },
+            'i' => self.check_keyword(text, "f", TokenType::If),
+            'n' => self.check_keyword(text, "il", TokenType::Nil),
+            'o' => self.check_keyword(text, "r", TokenType::Or),
+            'p' => self.check_keyword(text, "rint", TokenType::Print),
+            'r' => self.check_keyword(text, "eturn", TokenType::Return),
+            's' => self.check_keyword(text, "uper", TokenType::Super),
+            't' => match self.next(text) {
+                Some(c) => match c {
+                    'h' => self.check_keyword(text, "is", TokenType::This),
+                    'r' => self.check_keyword(text, "ue", TokenType::True),
+                    _ => self.finish_identifier(text),
+                },
+                _ => self.finish_identifier(text),
+            },
+            'v' => self.check_keyword(text, "ar", TokenType::Var),
+            'w' => self.check_keyword(text, "hile", TokenType::While),
+            _ => self.finish_identifier(text),
+        }
+    }
 
-    fn get_tokens(mut text: &str) -> Vec<Token> {
-        let mut lexer = Lexer::new();
-        let mut tokens = Vec::new();
+    #[inline]
+    fn finish_identifier(&mut self, text: &mut Text) -> TokenType {
+        self.consume_while(text, |c| c.is_ascii_alphanumeric() || c == '_');
+        TokenType::Identifier
+    }
 
-        while let Some(tok) = lexer.next_token(text) {
-            text = &text[tok.lexeme.len()..];
-
-            match tok.typ {
-                /* TokenType::Whitespace | TokenType::Newline => continue, */
-                _ => tokens.push(tok),
+    #[inline]
+    fn check_keyword(&mut self, text: &mut Text, keyword: &str, typ: TokenType) -> TokenType {
+        for c in keyword.chars() {
+            match text.peek() {
+                Some(p) if *p == c => {
+                    self.next(text);
+                }
+                _ => return self.finish_identifier(text),
             }
         }
 
-        tokens
-    }
-
-    #[test]
-    fn test_lexer_delims() {
-        let tokens = get_tokens("(   ) {   } ,   . -   + ;   / *   ");
-        let mut expected_tokens = Vec::new();
-
-        expected_tokens.push(Token::new(LeftParen, "(", 1));
-        expected_tokens.push(Token::new(Whitespace, "   ", 1));
-        expected_tokens.push(Token::new(RightParen, ")", 1));
-        expected_tokens.push(Token::new(Whitespace, " ", 1));
-        expected_tokens.push(Token::new(LeftBrace, "{", 1));
-        expected_tokens.push(Token::new(Whitespace, "   ", 1));
-        expected_tokens.push(Token::new(RightBrace, "}", 1));
-        expected_tokens.push(Token::new(Whitespace, " ", 1));
-        expected_tokens.push(Token::new(Comma, ",", 1));
-        expected_tokens.push(Token::new(Whitespace, "   ", 1));
-        expected_tokens.push(Token::new(Dot, ".", 1));
-        expected_tokens.push(Token::new(Whitespace, " ", 1));
-        expected_tokens.push(Token::new(Minus, "-", 1));
-        expected_tokens.push(Token::new(Whitespace, "   ", 1));
-        expected_tokens.push(Token::new(Plus, "+", 1));
-        expected_tokens.push(Token::new(Whitespace, " ", 1));
-        expected_tokens.push(Token::new(Semicolon, ";", 1));
-        expected_tokens.push(Token::new(Whitespace, "   ", 1));
-        expected_tokens.push(Token::new(Slash, "/", 1));
-        expected_tokens.push(Token::new(Whitespace, " ", 1));
-        expected_tokens.push(Token::new(Star, "*", 1));
-        expected_tokens.push(Token::new(Whitespace, "   ", 1));
-
-        for i in 0..tokens.len() {
-            assert_eq!(tokens[i], expected_tokens[i]);
+        match text.peek() {
+            Some(c) if c.is_ascii_alphanumeric() || *c == '_' => self.finish_identifier(text),
+            _ => typ,
         }
     }
 
-    #[test]
-    fn test_lexer_comparators() {
-        let tokens = get_tokens("   ! != = == > >= < <=   \n");
-        let mut expected_tokens = Vec::new();
+    #[inline]
+    fn number(&mut self, text: &mut Text) {
+        self.consume_while(text, |c| c.is_ascii_digit());
 
-        expected_tokens.push(Token::new(Whitespace, "   ", 1));
-        expected_tokens.push(Token::new(Bang, "!", 1));
-        expected_tokens.push(Token::new(Whitespace, " ", 1));
-        expected_tokens.push(Token::new(BangEqual, "!=", 1));
-        expected_tokens.push(Token::new(Whitespace, " ", 1));
-        expected_tokens.push(Token::new(Equal, "=", 1));
-        expected_tokens.push(Token::new(Whitespace, " ", 1));
-        expected_tokens.push(Token::new(EqualEqual, "==", 1));
-        expected_tokens.push(Token::new(Whitespace, " ", 1));
-        expected_tokens.push(Token::new(Greater, ">", 1));
-        expected_tokens.push(Token::new(Whitespace, " ", 1));
-        expected_tokens.push(Token::new(GreaterEqual, ">=", 1));
-        expected_tokens.push(Token::new(Whitespace, " ", 1));
-        expected_tokens.push(Token::new(Less, "<", 1));
-        expected_tokens.push(Token::new(Whitespace, " ", 1));
-        expected_tokens.push(Token::new(LessEqual, "<=", 1));
-        expected_tokens.push(Token::new(Whitespace, "   ", 1));
-        expected_tokens.push(Token::new(Newline, "\n", 2));
-
-        for i in 0..tokens.len() {
-            assert_eq!(tokens[i], expected_tokens[i]);
+        if let Some('.') = text.peek() {
+            if let Some(c) = self.peek_2(text) {
+                if c.is_ascii_digit() {
+                    self.next(text);
+                    self.consume_while(text, |c| c.is_ascii_digit());
+                }
+            }
         }
+    }
+
+    #[inline]
+    fn string(&mut self, text: &mut Text) {
+        self.consume_while(text, |c| c != '"');
+        match self.next(text) {
+            Some('"') => return,
+            // TODO: error reporting
+            _ => panic!("unterminated string"),
+        }
+    }
+
+    #[inline]
+    fn is_alpha(c: char) -> bool {
+        c.is_ascii_alphabetic() || c == '_'
     }
 }

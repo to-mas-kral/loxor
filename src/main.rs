@@ -33,7 +33,6 @@ fn main() {
     //let mut tokens = Vec::new();
 
     while let Some(t) = lexer.next_token(text) {
-        println!("{}", t.lexeme);
         println!("{:?}", t);
 
         let typ = t.typ;

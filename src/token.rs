@@ -11,7 +11,7 @@ impl<'l> Token<'l> {
     }
 }
 
-#[allow(dead_code)]
+/* #[allow(dead_code)] */
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum TokenType {
     // Single-character tokens.
@@ -63,6 +63,7 @@ pub enum TokenType {
     Error,
     Eof,
 
+    Comment,
     Whitespace,
     Newline,
 }
