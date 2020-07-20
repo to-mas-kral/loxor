@@ -1,4 +1,5 @@
-#[derive(Debug, PartialEq)]
+use crate::lexer::LexError;
+#[derive(Debug, PartialEq/* , Clone */)]
 pub struct Token<'l> {
     pub typ: TokenType,
     pub lexeme: &'l str,
@@ -10,8 +11,6 @@ impl<'l> Token<'l> {
         Token { typ, lexeme, line }
     }
 }
-
-/* #[allow(dead_code)] */
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum TokenType {
     // Single-character tokens.
@@ -60,10 +59,9 @@ pub enum TokenType {
     Var,
     While,
 
-    Error,
-    Eof,
-
     Comment,
     Whitespace,
     Newline,
+
+    Error(LexError),
 }

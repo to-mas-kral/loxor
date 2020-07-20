@@ -14,15 +14,18 @@ type Text<'t> = Peekable<Chars<'t>>;
  DIGIT          → "0" ... "9" ;
 */
 
-pub struct Lexer {
+pub struct Lexer<'t> {
+    text: &'t str,
+
     line: usize,
 
     token_len: usize,
 }
 
-impl Lexer {
-    pub fn new() -> Lexer {
+impl<'t> Lexer<'t> {
+    pub fn new(text: &'t str) -> Lexer<'t> {
         Lexer {
+            text,
             line: 1,
             token_len: 0,
         }
@@ -34,9 +37,28 @@ impl Lexer {
         self.token_len = 0;
         let typ: TokenType;
 
-        match self.next(&mut text) {
+        match self.next_char(&mut text) {
             Some(c) => {
                 match c {
+                    c if Lexer::is_alpha(c) => {
+                        typ = self.identifier_or_keyword(&mut text, c);
+                    }
+                    c if c.is_ascii_digit() => {
+                        typ = TokenType::Number;
+                        self.number(&mut text);
+                    }
+                    ' ' => {
+                        typ = TokenType::Whitespace;
+                        self.consume_while(&mut text, |c| c == ' ');
+                    }
+                    '\t' => {
+                        typ = TokenType::Whitespace;
+                        self.consume_while(&mut text, |c| c == '\t');
+                    }
+                    '\n' => {
+                        typ = TokenType::Newline;
+                        self.line += 1;
+                    }
                     '(' => typ = TokenType::LeftParen,
                     ')' => typ = TokenType::RightParen,
                     '{' => typ = TokenType::LeftBrace,
@@ -83,30 +105,12 @@ impl Lexer {
                             typ = TokenType::Less
                         }
                     }
-                    '\n' => {
-                        typ = TokenType::Newline;
-                        self.line += 1;
+                    '\"' => typ = self.string(&mut text),
+                    c => {
+                        typ = TokenType::Error(LexError::InvalidCharacter);
+                        // Assumes UTF-8 encoding, but whatever
+                        self.token_len += c.len_utf8() - 1;
                     }
-                    ' ' => {
-                        typ = TokenType::Whitespace;
-                        self.consume_while(&mut text, |c| c == ' ');
-                    }
-                    '\t' => {
-                        typ = TokenType::Whitespace;
-                        self.consume_while(&mut text, |c| c == '\t');
-                    }
-                    c if Lexer::is_alpha(c) => {
-                        typ = self.identifier_or_keyword(&mut text, c);
-                    }
-                    c if c.is_ascii_digit() => {
-                        typ = TokenType::Number;
-                        self.number(&mut text);
-                    }
-                    '\"' => {
-                        typ = TokenType::String;
-                        self.string(&mut text);
-                    }
-                    _ => unimplemented!(),
                 };
                 let lexeme: &str = &_text[..self.token_len];
                 let ret: Token = Token::new(typ, lexeme, self.line);
@@ -117,7 +121,7 @@ impl Lexer {
     }
 
     #[inline]
-    fn next(&mut self, text: &mut Text) -> Option<char> {
+    fn next_char(&mut self, text: &mut Text) -> Option<char> {
         self.token_len += 1;
         text.next()
     }
@@ -134,7 +138,7 @@ impl Lexer {
     fn advance_if(&mut self, text: &mut Text, ch: char) -> bool {
         match text.peek() {
             Some(c) if *c == ch => {
-                self.next(text);
+                self.next_char(text);
                 true
             }
             _ => false,
@@ -149,7 +153,7 @@ impl Lexer {
                     if *c == '\n' {
                         self.line += 1;
                     }
-                    self.next(text);
+                    self.next_char(text);
                 }
                 _ => return,
             }
@@ -162,7 +166,7 @@ impl Lexer {
             'a' => self.check_keyword(text, "nd", TokenType::And),
             'c' => self.check_keyword(text, "lass", TokenType::Class),
             'e' => self.check_keyword(text, "lse", TokenType::Else),
-            'f' => match self.next(text) {
+            'f' => match self.next_char(text) {
                 Some(c) => match c {
                     'a' => self.check_keyword(text, "lse", TokenType::False),
                     'o' => self.check_keyword(text, "r", TokenType::For),
@@ -177,7 +181,7 @@ impl Lexer {
             'p' => self.check_keyword(text, "rint", TokenType::Print),
             'r' => self.check_keyword(text, "eturn", TokenType::Return),
             's' => self.check_keyword(text, "uper", TokenType::Super),
-            't' => match self.next(text) {
+            't' => match self.next_char(text) {
                 Some(c) => match c {
                     'h' => self.check_keyword(text, "is", TokenType::This),
                     'r' => self.check_keyword(text, "ue", TokenType::True),
@@ -202,7 +206,7 @@ impl Lexer {
         for c in keyword.chars() {
             match text.peek() {
                 Some(p) if *p == c => {
-                    self.next(text);
+                    self.next_char(text);
                 }
                 _ => return self.finish_identifier(text),
             }
@@ -221,7 +225,7 @@ impl Lexer {
         if let Some('.') = text.peek() {
             if let Some(c) = self.peek_2(text) {
                 if c.is_ascii_digit() {
-                    self.next(text);
+                    self.next_char(text);
                     self.consume_while(text, |c| c.is_ascii_digit());
                 }
             }
@@ -229,12 +233,11 @@ impl Lexer {
     }
 
     #[inline]
-    fn string(&mut self, text: &mut Text) {
+    fn string(&mut self, text: &mut Text) -> TokenType {
         self.consume_while(text, |c| c != '"');
-        match self.next(text) {
-            Some('"') => return,
-            // TODO: error reporting
-            _ => panic!("unterminated string"),
+        match self.next_char(text) {
+            Some('"') => TokenType::String,
+            _ => TokenType::Error(LexError::UnterminatedString),
         }
     }
 
@@ -242,4 +245,33 @@ impl Lexer {
     fn is_alpha(c: char) -> bool {
         c.is_ascii_alphabetic() || c == '_'
     }
+}
+
+impl<'t> Iterator for Lexer<'t> {
+    type Item = Token<'t>;
+
+    fn next(&mut self) -> Option<Token<'t>> {
+        loop {
+            match self.next_token(self.text) {
+                Some(t) => {
+                    self.text = &self.text[self.token_len..];
+                    match t.typ {
+                        TokenType::Whitespace | TokenType::Comment | TokenType::Newline => continue,
+                        _ => {
+                            return Some(t);
+                        }
+                    }
+                    /* self.text = &self.text[self.token_len..];
+                    tok */
+                }
+                None => return None,
+            }
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum LexError {
+    InvalidCharacter,
+    UnterminatedString,
 }
