@@ -7,13 +7,14 @@ use crate::{
     error,
     lexer::{LexError, Lexer},
     token::{Token, TokenType},
+    vm::RuntimeValue,
 };
 
 pub struct Compiler<'t> {
     text: &'t str,
     lexer: Peekable<Lexer<'t>>,
 
-    bytecode: Chunk,
+    pub bytecode: Chunk,
 
     had_error: bool,
     panic_mode: bool,
@@ -45,10 +46,7 @@ impl<'t> Compiler<'t> {
         match self.lexer.next() {
             Some(t) => match t.typ {
                 TokenType::Error(_) => panic!(),
-                _ => {
-                    //dbg!(&t);
-                    return Some(t);
-                }
+                _ => return Some(t),
             },
             None => return None,
         }
@@ -58,10 +56,7 @@ impl<'t> Compiler<'t> {
         match self.lexer.peek() {
             Some(t) => match t.typ {
                 TokenType::Error(_) => panic!(),
-                _ => {
-                    //dbg!(&t);
-                    return Some(t);
-                }
+                _ => return Some(t),
             },
             None => return None,
         }
@@ -70,7 +65,6 @@ impl<'t> Compiler<'t> {
     fn expect_token(&mut self, expected_tok: TokenType) {
         match self.lexer.next() {
             Some(t) => {
-                //dbg!(&t);
                 if expected_tok != t.typ {
                     error::report_parse_error();
                     panic!();
@@ -134,8 +128,18 @@ impl<'t> Compiler<'t> {
 
     fn number(&mut self, tok: &Token) {
         // TODO: handle double parsing error
-        let numerical_value = tok.lexeme.parse::<f64>().unwrap();
-        self.bytecode.add_constant(numerical_value, tok.line);
+        let num = tok.lexeme.parse::<f64>().unwrap();
+        self.bytecode
+            .add_constant(RuntimeValue::Number(num), tok.line);
+    }
+
+    fn literal(&mut self, tok: &Token) {
+        match tok.typ {
+            TokenType::Nil => self.bytecode.add_opocode(opcodes::NIL, tok.line),
+            TokenType::True => self.bytecode.add_opocode(opcodes::TRUE, tok.line),
+            TokenType::False => self.bytecode.add_opocode(opcodes::FALSE, tok.line),
+            _ => unreachable!(),
+        }
     }
 
     fn precedence_rule(typ: TokenType) -> ParsePrecedence {
@@ -151,6 +155,7 @@ impl<'t> Compiler<'t> {
             TokenType::LeftParen => self.grouping(),
             TokenType::Minus => self.unary(tok),
             TokenType::Number => self.number(tok),
+            TokenType::Nil | TokenType::False | TokenType::True => self.literal(tok),
             _ => (),
         }
     }

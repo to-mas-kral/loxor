@@ -1,5 +1,5 @@
 use crate::lexer::LexError;
-#[derive(Debug, PartialEq/* , Clone */)]
+#[derive(Debug, PartialEq)]
 pub struct Token<'l> {
     pub typ: TokenType,
     pub lexeme: &'l str,

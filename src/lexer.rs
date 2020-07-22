@@ -6,6 +6,8 @@ mod test;
 
 type Text<'t> = Peekable<Chars<'t>>;
 
+// TODO: challenge - string interpolation
+
 /*
  NUMBER      → DIGIT+ ( "." DIGIT+ )? ;
  STRING         → "\"" <any char except "\"">* "\"" ;

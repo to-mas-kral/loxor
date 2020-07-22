@@ -8,8 +8,9 @@ mod compiler;
 mod error;
 mod lexer;
 mod token;
+mod vm;
 
-fn main() {
+fn main() -> Result<(), vm::LoxRuntimeErr> {
     let args: Vec<String> = env::args().collect();
 
     let file_path = match args.len() {
@@ -26,4 +27,7 @@ fn main() {
     let mut compiler = compiler::Compiler::new(text);
     compiler.compile();
     compiler.dump_bytecode();
+
+    let mut vm = vm::Vm::new(compiler.bytecode);
+    return vm.execute();
 }
