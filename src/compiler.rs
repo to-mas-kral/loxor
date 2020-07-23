@@ -1,13 +1,13 @@
 #![allow(dead_code, unused_imports)]
 
-use std::iter::Peekable;
+use std::{iter::Peekable, mem::transmute};
 
 use crate::{
     bytecode::{opcodes, Chunk},
     error,
     lexer::{LexError, Lexer},
+    runtime_val::{ObjType, RuntimeValue, StringObj},
     token::{Token, TokenType},
-    vm::RuntimeValue,
 };
 
 pub struct Compiler<'t> {
@@ -111,6 +111,21 @@ impl<'t> Compiler<'t> {
             TokenType::Minus => self.bytecode.add_opocode(opcodes::SUBTRACT, tok.line),
             TokenType::Star => self.bytecode.add_opocode(opcodes::MULTIPLY, tok.line),
             TokenType::Slash => self.bytecode.add_opocode(opcodes::DIVIDE, tok.line),
+            TokenType::BangEqual => {
+                self.bytecode.add_opocode(opcodes::EQUAL, tok.line);
+                self.bytecode.add_opocode(opcodes::NOT, tok.line);
+            }
+            TokenType::EqualEqual => self.bytecode.add_opocode(opcodes::EQUAL, tok.line),
+            TokenType::Greater => self.bytecode.add_opocode(opcodes::GREATER, tok.line),
+            TokenType::GreaterEqual => {
+                self.bytecode.add_opocode(opcodes::LESS, tok.line);
+                self.bytecode.add_opocode(opcodes::NOT, tok.line);
+            }
+            TokenType::Less => self.bytecode.add_opocode(opcodes::LESS, tok.line),
+            TokenType::LessEqual => {
+                self.bytecode.add_opocode(opcodes::GREATER, tok.line);
+                self.bytecode.add_opocode(opcodes::NOT, tok.line);
+            }
             _ => unreachable!(),
         }
     }
@@ -122,6 +137,7 @@ impl<'t> Compiler<'t> {
 
         match operator_type {
             TokenType::Minus => self.bytecode.add_opocode(opcodes::NEGATE, tok.line),
+            TokenType::Bang => self.bytecode.add_opocode(opcodes::NOT, tok.line),
             _ => unreachable!(),
         }
     }
@@ -142,10 +158,34 @@ impl<'t> Compiler<'t> {
         }
     }
 
+    fn string(&mut self, tok: &Token) {
+        /* use crate::runtime_val::StringObjFam;
+        let str_obj_fam = StringObjFam {
+            typ: ObjType::String,
+            len: tok.lexeme.len() - 2,
+            contents: tok.lexeme[1..(tok.lexeme.len() - 1)],
+        };
+
+        let boxed = Box::into_raw(Box::new(str_obj_fam));
+ */
+        let string_obj = StringObj::new(&tok.lexeme[1..(tok.lexeme.len() - 1)]);
+        let boxed_string = Box::into_raw(Box::new(string_obj));
+
+        let string_ptr = unsafe { transmute::<*mut StringObj, *mut ObjType>(boxed_string) };
+
+        let string_val = RuntimeValue::Obj(string_ptr);
+        self.bytecode.add_constant(string_val, tok.line);
+    }
+
     fn precedence_rule(typ: TokenType) -> ParsePrecedence {
         match typ {
             TokenType::Minus | TokenType::Plus => parse_precedence::TERM,
             TokenType::Slash | TokenType::Star => parse_precedence::FACTOR,
+            TokenType::BangEqual | TokenType::EqualEqual => parse_precedence::EQUALITY,
+            TokenType::Greater
+            | TokenType::GreaterEqual
+            | TokenType::Less
+            | TokenType::LessEqual => parse_precedence::COMPARISON,
             _ => parse_precedence::NONE,
         }
     }
@@ -153,16 +193,26 @@ impl<'t> Compiler<'t> {
     fn prefix_rule(&mut self, tok: &Token) {
         match tok.typ {
             TokenType::LeftParen => self.grouping(),
-            TokenType::Minus => self.unary(tok),
+            TokenType::Minus | TokenType::Bang => self.unary(tok),
             TokenType::Number => self.number(tok),
             TokenType::Nil | TokenType::False | TokenType::True => self.literal(tok),
+            TokenType::String => self.string(tok),
             _ => (),
         }
     }
 
     fn infix_rule(&mut self, tok: &Token) {
         match tok.typ {
-            TokenType::Minus | TokenType::Plus | TokenType::Slash | TokenType::Star => {
+            TokenType::Minus
+            | TokenType::Plus
+            | TokenType::Slash
+            | TokenType::Star
+            | TokenType::BangEqual
+            | TokenType::EqualEqual
+            | TokenType::Greater
+            | TokenType::GreaterEqual
+            | TokenType::Less
+            | TokenType::LessEqual => {
                 self.binary(tok);
             }
             _ => (),

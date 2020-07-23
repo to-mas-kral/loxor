@@ -1,7 +1,7 @@
 use core::slice::Iter;
 use std::iter::Enumerate;
 
-use crate::vm::RuntimeValue;
+use crate::runtime_val::RuntimeValue;
 
 // TODO: challenge - run-length line number encoding
 // TODO: add support for more constants (32 bit index)
@@ -53,10 +53,14 @@ impl Chunk {
                 opcodes::NIL => println!("NIL"),
                 opcodes::TRUE => println!("TRUE"),
                 opcodes::FALSE => println!("FALSE"),
+                opcodes::EQUAL => println!("EQUAL"),
+                opcodes::GREATER => println!("GREATER"),
+                opcodes::LESS => println!("LESS"),
                 opcodes::ADD => println!("ADD"),
                 opcodes::SUBTRACT => println!("SUBTRACT"),
                 opcodes::MULTIPLY => println!("MULTIPLY"),
                 opcodes::DIVIDE => println!("DIVIDE"),
+                opcodes::NOT => println!("NOT"),
                 opcodes::NEGATE => println!("NEGATE"),
                 _ => unreachable!(),
             }
@@ -76,7 +80,7 @@ impl Chunk {
 
 pub type Bytecode = u8;
 
-pub mod opcodes {
+pub(crate) mod opcodes {
     use super::Bytecode;
 
     pub const CONSTANT: Bytecode = 0;
@@ -94,14 +98,14 @@ pub mod opcodes {
     //pub const GET_PROPERTY: Bytecode = 12;
     //pub const SET_PROPERTY: Bytecode = 13;
     //pub const GET_SUPER: Bytecode = 14;
-    //pub const EQUAL: Bytecode = 15;
-    //pub const GREATER: Bytecode = 16;
-    //pub const LESS: Bytecode = 17;
+    pub const EQUAL: Bytecode = 15;
+    pub const GREATER: Bytecode = 16;
+    pub const LESS: Bytecode = 17;
     pub const ADD: Bytecode = 18;
     pub const SUBTRACT: Bytecode = 19;
     pub const MULTIPLY: Bytecode = 20;
     pub const DIVIDE: Bytecode = 21;
-    //pub const NOT: Bytecode = 22;
+    pub const NOT: Bytecode = 22;
     pub const NEGATE: Bytecode = 23;
     //pub const PRINT: Bytecode = 24;
     //pub const JUMP: Bytecode = 25;
@@ -115,5 +119,5 @@ pub mod opcodes {
     pub const RETURN: Bytecode = 33;
     //pub const CLASS: Bytecode = 34;
     //pub const INHERIT: Bytecode = 35;
-    //pub const METHO: Bytecode = 36;
+    //pub const METHOD: Bytecode = 36;
 }

@@ -9,6 +9,7 @@ mod error;
 mod lexer;
 mod token;
 mod vm;
+mod runtime_val;
 
 fn main() -> Result<(), vm::LoxRuntimeErr> {
     let args: Vec<String> = env::args().collect();

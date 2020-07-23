@@ -1,4 +1,9 @@
-use super::bytecode::{opcodes, Bytecode, Chunk};
+use std::mem::transmute;
+
+use super::{
+    bytecode::{opcodes, Bytecode, Chunk},
+    runtime_val::{ObjType, RuntimeValue, StringObj},
+};
 
 const STACK_SIZE: usize = 0xFF;
 
@@ -11,7 +16,7 @@ pub struct Vm {
 }
 
 macro_rules! binary_op {
-    ($name:ident, $op:tt) => {
+    ($name:ident, $op:tt, $typ:ident) => {
         #[inline]
         fn $name(&mut self) -> Result<(), LoxRuntimeErr> {
             let first = self.peek(2)?;
@@ -19,7 +24,7 @@ macro_rules! binary_op {
 
             match (first, second) {
                 (RuntimeValue::Number(n1), RuntimeValue::Number(n2)) => {
-                    self.stack[self.sp - 2] = RuntimeValue::Number(n1 $op n2);
+                    self.stack[self.sp - 2] = RuntimeValue::$typ(n1 $op n2);
                     self.sp -= 1;
                     Ok(())
                 }
@@ -58,21 +63,25 @@ impl Vm {
             self.ip += 1;
 
             match opcode {
-                opcodes::RETURN => {
-                    println!("{}", self.pop()?);
-                    return Ok(());
-                }
                 opcodes::CONSTANT => self.constant()?,
                 opcodes::NIL => self.push(RuntimeValue::Nil)?,
                 opcodes::TRUE => self.push(RuntimeValue::Bool(true))?,
                 opcodes::FALSE => self.push(RuntimeValue::Bool(false))?,
+                opcodes::EQUAL => self.equal()?,
+                opcodes::GREATER => self.greater()?,
+                opcodes::LESS => self.less()?,
                 opcodes::ADD => self.add()?,
                 opcodes::SUBTRACT => self.subtract()?,
                 opcodes::MULTIPLY => self.multiply()?,
                 opcodes::DIVIDE => self.divide()?,
+                opcodes::NOT => self.not()?,
                 opcodes::NEGATE => self.negate()?,
-                _ => unreachable!(),
-            }
+                opcodes::RETURN => {
+                    println!("{}", self.pop()?);
+                    return Ok(());
+                }
+                _ => panic!("Invalid or unimplemented opcode: {}", opcode),
+            };
         }
     }
 
@@ -131,17 +140,35 @@ impl Vm {
         Ok(())
     }
 
-    binary_op!(add, +);
-    binary_op!(subtract, -);
-    binary_op!(multiply, *);
-    binary_op!(divide, /);
+    binary_op!(add, +, Number);
+    binary_op!(subtract, -, Number);
+    binary_op!(multiply, *, Number);
+    binary_op!(divide, /, Number);
+
+    binary_op!(greater, >, Bool);
+    binary_op!(less, <, Bool);
+
+    #[inline]
+    fn not(&mut self) -> Result<(), LoxRuntimeErr> {
+        let peeked = self.peek_mut(1)?;
+        *peeked = RuntimeValue::Bool(Vm::is_falsy(*peeked));
+        Ok(())
+    }
+
+    #[inline]
+    fn equal(&mut self) -> Result<(), LoxRuntimeErr> {
+        // TODO: execute equal in-place
+        let equal = Vm::values_equal(self.pop()?, self.pop()?);
+        self.push(RuntimeValue::Bool(equal))?;
+        Ok(())
+    }
 
     #[inline]
     fn negate(&mut self) -> Result<(), LoxRuntimeErr> {
         let peeked = self.peek_mut(1)?;
 
         match peeked {
-            RuntimeValue::Bool(_) => Err(LoxRuntimeErr::InvalidType),
+            RuntimeValue::Bool(_) | RuntimeValue::Obj(_) => Err(LoxRuntimeErr::InvalidType),
             RuntimeValue::Number(n) => {
                 *peeked = RuntimeValue::Number(-*n);
                 Ok(())
@@ -149,34 +176,32 @@ impl Vm {
             RuntimeValue::Nil => Err(LoxRuntimeErr::MissingOperand),
         }
     }
-}
 
-#[derive(Clone, Copy)]
-pub enum RuntimeValue {
-    Nil,
-    Bool(bool),
-    Number(f64),
-}
+    #[inline]
+    fn values_equal(val1: RuntimeValue, val2: RuntimeValue) -> bool {
+        match (val1, val2) {
+            (RuntimeValue::Bool(b1), RuntimeValue::Bool(b2)) => b1 == b2,
+            (RuntimeValue::Number(n1), RuntimeValue::Number(n2)) => n1 == n2,
+            (RuntimeValue::Obj(typ_ptr_1), RuntimeValue::Obj(typ_ptr_2)) => unsafe {
+                match (*typ_ptr_1, *typ_ptr_2) {
+                    (ObjType::String, ObjType::String) => {
+                        let string_ptr_1 = transmute::<*mut ObjType, *mut StringObj>(typ_ptr_1);
+                        let string_ptr_2 = transmute::<*mut ObjType, *mut StringObj>(typ_ptr_2);
 
-impl core::fmt::Display for RuntimeValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
-        match self {
-            RuntimeValue::Bool(b) => match b {
-                true => write!(f, "true"),
-                false => write!(f, "false"),
+                        (*string_ptr_1).contents == (*string_ptr_2).contents
+                    }
+                }
             },
-            RuntimeValue::Number(n) => write!(f, "{}", n.to_string().as_str()),
-            RuntimeValue::Nil => write!(f, ""),
+            (RuntimeValue::Nil, RuntimeValue::Nil) => true,
+            _ => false,
         }
     }
-}
 
-impl RuntimeValue {
-    pub fn type_repr(&self) -> &str {
-        match self {
-            RuntimeValue::Nil => "",
-            RuntimeValue::Bool(_) => "bool",
-            RuntimeValue::Number(_) => "number",
+    #[inline]
+    fn is_falsy(val: RuntimeValue) -> bool {
+        match val {
+            RuntimeValue::Nil | RuntimeValue::Bool(false) => true,
+            _ => false,
         }
     }
 }
