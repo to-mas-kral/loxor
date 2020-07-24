@@ -1,43 +1,83 @@
-use std::mem::transmute;
+use std::{
+    alloc::{alloc, dealloc, realloc, Layout},
+    mem::{size_of, transmute},
+    ptr::copy_nonoverlapping,
+    slice, str,
+};
 #[derive(Clone, Copy)]
 pub enum RuntimeValue {
     Nil,
     Bool(bool),
     Number(f64),
-    Obj(*mut ObjType),
-}
-#[derive(Clone, Copy)]
-pub enum ObjType {
-    String,
-    //Function,
+    String(*mut StringObj),
 }
 
-#[repr(C)]
-pub struct StringObjFam <T: ?Sized> {
-    pub typ: ObjType,
-    pub len: usize,
-    pub contents: T,
+extern "C" {
+    pub type opaque_slice;
 }
 
 #[repr(C)]
 pub struct StringObj {
-    typ: ObjType,
-    pub contents: String,
+    pub len: usize,
+    pub contents: opaque_slice,
 }
 
+// TODO: consult StringObj implementation with more experienced devs
+
 impl StringObj {
-    pub fn new(chars: &str) -> StringObj {
-        StringObj {
-            typ: ObjType::String,
-            contents: String::from(chars),
+    pub fn new(contents: &str) -> *mut StringObj {
+        let size = size_of::<usize>() + contents.len();
+        let layout = Layout::from_size_align(size, size_of::<usize>()).expect("shouldn't happen");
+        unsafe {
+            let ptr = alloc(layout);
+            let string_ptr = transmute::<*mut u8, *mut StringObj>(ptr);
+            (*string_ptr).len = contents.len();
+
+            let contents_ptr = &mut (*string_ptr).contents as *mut opaque_slice as *mut u8;
+            copy_nonoverlapping::<u8>(contents.as_ptr(), contents_ptr, contents.len());
+
+            string_ptr
         }
     }
+
+    // TODO: refactor string concat
+    pub fn concat(&mut self, other: *mut StringObj) -> *mut StringObj {
+        let size = size_of::<usize>() + self.len;
+        let prev_layout =
+            Layout::from_size_align(size, size_of::<usize>()).expect("shouldn't happen");
+        unsafe {
+            let prev_len = self.len;
+            self.len += (*other).len;
+            let new_size = size_of::<usize>() + self.len;
+
+            let self_ptr = self as *mut StringObj as *mut u8;
+            let new_ptr = realloc(self_ptr, prev_layout, new_size);
+
+            let contents_ptr_dst = &mut self.contents as *mut opaque_slice as *mut u8;
+            let contents_ptr_src = &mut (*other).contents as *mut opaque_slice as *mut u8;
+
+            copy_nonoverlapping(
+                contents_ptr_src,
+                contents_ptr_dst.add(prev_len),
+                (*other).len,
+            );
+
+            transmute::<*mut u8, *mut StringObj>(new_ptr)
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        unsafe {
+            let data_ptr = &self.contents as *const opaque_slice as *const u8;
+            let slice = slice::from_raw_parts(data_ptr, self.len);
+            str::from_utf8_unchecked(slice)
+        }
+    }
+
+    pub fn _free(&mut self) {
+        todo!();
+    }
 }
-/*
-#[repr(C)]
-pub struct FunctionObj {
-    name: String,
-} */
 
 impl core::fmt::Display for RuntimeValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
@@ -48,17 +88,7 @@ impl core::fmt::Display for RuntimeValue {
             },
             RuntimeValue::Number(n) => write!(f, "{}", n.to_string().as_str()),
             RuntimeValue::Nil => write!(f, "nil"),
-            RuntimeValue::Obj(typ_ptr) => unsafe {
-                match **typ_ptr {
-                    ObjType::String => {
-                        let string_ptr = transmute::<*mut ObjType, *mut StringObj>(*typ_ptr);
-                        write!(f, "{}", (*string_ptr).contents)
-                    } /* ObjType::Function => {
-                          let function_ptr = transmute::<*mut ObjType, *mut FunctionObj>(*typ_ptr);
-                          write!(f, "{}", (*function_ptr).name)
-                      } */
-                }
-            },
+            RuntimeValue::String(string_ptr) => unsafe { write!(f, "{}", (**string_ptr).as_str()) },
         }
     }
 }
@@ -69,12 +99,7 @@ impl RuntimeValue {
             RuntimeValue::Nil => "",
             RuntimeValue::Bool(_) => "bool",
             RuntimeValue::Number(_) => "number",
-            RuntimeValue::Obj(typ_ptr) => unsafe {
-                match **typ_ptr {
-                    ObjType::String => "string",
-                    /* ObjType::Function => "function", */
-                }
-            },
+            RuntimeValue::String(_) => "string",
         }
     }
 }

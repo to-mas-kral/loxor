@@ -6,7 +6,7 @@ use crate::{
     bytecode::{opcodes, Chunk},
     error,
     lexer::{LexError, Lexer},
-    runtime_val::{ObjType, RuntimeValue, StringObj},
+    runtime_val::{RuntimeValue, StringObj},
     token::{Token, TokenType},
 };
 
@@ -159,21 +159,9 @@ impl<'t> Compiler<'t> {
     }
 
     fn string(&mut self, tok: &Token) {
-        /* use crate::runtime_val::StringObjFam;
-        let str_obj_fam = StringObjFam {
-            typ: ObjType::String,
-            len: tok.lexeme.len() - 2,
-            contents: tok.lexeme[1..(tok.lexeme.len() - 1)],
-        };
-
-        let boxed = Box::into_raw(Box::new(str_obj_fam));
- */
-        let string_obj = StringObj::new(&tok.lexeme[1..(tok.lexeme.len() - 1)]);
-        let boxed_string = Box::into_raw(Box::new(string_obj));
-
-        let string_ptr = unsafe { transmute::<*mut StringObj, *mut ObjType>(boxed_string) };
-
-        let string_val = RuntimeValue::Obj(string_ptr);
+        let slice = &tok.lexeme[1..(tok.lexeme.len() - 1)];
+        let string_ptr = StringObj::new(slice);
+        let string_val = RuntimeValue::String(string_ptr);
         self.bytecode.add_constant(string_val, tok.line);
     }
 
@@ -237,3 +225,5 @@ mod parse_precedence {
     pub const CALL: ParsePrecedence = 9;
     pub const PRIMARY: ParsePrecedence = 10;
 }
+
+// TODO: write compiler tests

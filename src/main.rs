@@ -1,4 +1,5 @@
 #![feature(test)]
+#![feature(extern_types)]
 
 use std::{env, fs::File, io::prelude::*};
 
@@ -7,9 +8,9 @@ mod bytecode;
 mod compiler;
 mod error;
 mod lexer;
+mod runtime_val;
 mod token;
 mod vm;
-mod runtime_val;
 
 fn main() -> Result<(), vm::LoxRuntimeErr> {
     let args: Vec<String> = env::args().collect();

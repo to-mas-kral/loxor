@@ -1,8 +1,6 @@
-use std::mem::transmute;
-
 use super::{
     bytecode::{opcodes, Bytecode, Chunk},
-    runtime_val::{ObjType, RuntimeValue, StringObj},
+    runtime_val::RuntimeValue,
 };
 
 const STACK_SIZE: usize = 0xFF;
@@ -140,7 +138,38 @@ impl Vm {
         Ok(())
     }
 
-    binary_op!(add, +, Number);
+    #[inline]
+    fn add(&mut self) -> Result<(), LoxRuntimeErr> {
+        let first = self.peek(2)?;
+        let second = self.peek(1)?;
+
+        match (first, second) {
+            (RuntimeValue::Number(n1), RuntimeValue::Number(n2)) => {
+                self.stack[self.sp - 2] = RuntimeValue::Number(n1 + n2);
+                self.sp -= 1;
+                Ok(())
+            }
+            (RuntimeValue::String(s1), RuntimeValue::String(s2)) => unsafe {
+                let new_str_ptr = (**s1).concat(*s2);
+                self.stack[self.sp - 2] = RuntimeValue::String(new_str_ptr);
+                self.sp -= 1;
+                // TODO: string concatenation could return an error
+                Ok(())
+            },
+            (RuntimeValue::Nil, _) | (_, RuntimeValue::Nil) => Err(LoxRuntimeErr::MissingOperand),
+            _ => {
+                eprintln!(
+                    "runtime error at line {}: cannot apply '{}' to {} and {}",
+                    self.chunk.lines[self.ip],
+                    std::stringify!($name),
+                    first.type_repr(),
+                    second.type_repr()
+                );
+                Err(LoxRuntimeErr::InvalidType)
+            }
+        }
+    }
+
     binary_op!(subtract, -, Number);
     binary_op!(multiply, *, Number);
     binary_op!(divide, /, Number);
@@ -168,7 +197,7 @@ impl Vm {
         let peeked = self.peek_mut(1)?;
 
         match peeked {
-            RuntimeValue::Bool(_) | RuntimeValue::Obj(_) => Err(LoxRuntimeErr::InvalidType),
+            RuntimeValue::Bool(_) | RuntimeValue::String(_) => Err(LoxRuntimeErr::InvalidType),
             RuntimeValue::Number(n) => {
                 *peeked = RuntimeValue::Number(-*n);
                 Ok(())
@@ -182,15 +211,8 @@ impl Vm {
         match (val1, val2) {
             (RuntimeValue::Bool(b1), RuntimeValue::Bool(b2)) => b1 == b2,
             (RuntimeValue::Number(n1), RuntimeValue::Number(n2)) => n1 == n2,
-            (RuntimeValue::Obj(typ_ptr_1), RuntimeValue::Obj(typ_ptr_2)) => unsafe {
-                match (*typ_ptr_1, *typ_ptr_2) {
-                    (ObjType::String, ObjType::String) => {
-                        let string_ptr_1 = transmute::<*mut ObjType, *mut StringObj>(typ_ptr_1);
-                        let string_ptr_2 = transmute::<*mut ObjType, *mut StringObj>(typ_ptr_2);
-
-                        (*string_ptr_1).contents == (*string_ptr_2).contents
-                    }
-                }
+            (RuntimeValue::String(s1), RuntimeValue::String(s2)) => unsafe {
+                (*s1).as_str() == (*s2).as_str()
             },
             (RuntimeValue::Nil, RuntimeValue::Nil) => true,
             _ => false,
