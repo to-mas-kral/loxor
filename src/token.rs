@@ -63,5 +63,7 @@ pub enum TokenType {
     Whitespace,
     Newline,
 
+    Eof,
+
     Error(LexError),
 }

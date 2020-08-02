@@ -1,9 +1,13 @@
+use std::{mem, ptr};
+
 use super::{
     bytecode::{opcodes, Bytecode, Chunk},
-    runtime_val::RuntimeValue,
+    runtime_val::{Obj, ObjTyp, RuntimeValue, StringObj},
 };
 
 const STACK_SIZE: usize = 0xFF;
+
+type RuntimeResult = Result<(), LoxRuntimeErr>;
 
 pub struct Vm {
     chunk: Chunk,
@@ -11,12 +15,14 @@ pub struct Vm {
     sp: usize,
 
     stack: [RuntimeValue; STACK_SIZE],
+
+    objects: *mut Obj,
 }
 
 macro_rules! binary_op {
     ($name:ident, $op:tt, $typ:ident) => {
         #[inline]
-        fn $name(&mut self) -> Result<(), LoxRuntimeErr> {
+        fn $name(&mut self) -> RuntimeResult {
             let first = self.peek(2)?;
             let second = self.peek(1)?;
 
@@ -32,7 +38,7 @@ macro_rules! binary_op {
                 _ => {
                     eprintln!(
                         "runtime error at line {}: cannot apply '{}' to {} and {}",
-                        self.chunk.lines[self.ip],
+                        self.chunk.get_line_at_ip(self.ip),
                         std::stringify!($name),
                         first.type_repr(),
                         second.type_repr()
@@ -46,25 +52,35 @@ macro_rules! binary_op {
 
 impl Vm {
     pub fn new(chunk: Chunk) -> Vm {
-        Vm {
+        let mut vm = Vm {
             chunk,
             ip: 0,
             sp: 0,
 
             stack: [RuntimeValue::Nil; STACK_SIZE],
-        }
+
+            objects: ptr::null_mut(),
+        };
+
+        vm.link_objects();
+
+        vm
     }
 
-    pub fn execute(&mut self) -> Result<(), LoxRuntimeErr> {
+    pub fn execute(&mut self) -> RuntimeResult {
         loop {
             let opcode = self.chunk.code[self.ip];
             self.ip += 1;
 
             match opcode {
+                opcodes::RETURN => return Ok(()),
                 opcodes::CONSTANT => self.constant()?,
                 opcodes::NIL => self.push(RuntimeValue::Nil)?,
                 opcodes::TRUE => self.push(RuntimeValue::Bool(true))?,
                 opcodes::FALSE => self.push(RuntimeValue::Bool(false))?,
+                opcodes::POP => {
+                    self.pop()?;
+                }
                 opcodes::EQUAL => self.equal()?,
                 opcodes::GREATER => self.greater()?,
                 opcodes::LESS => self.less()?,
@@ -74,17 +90,16 @@ impl Vm {
                 opcodes::DIVIDE => self.divide()?,
                 opcodes::NOT => self.not()?,
                 opcodes::NEGATE => self.negate()?,
-                opcodes::RETURN => {
-                    println!("{}", self.pop()?);
-                    return Ok(());
-                }
+                opcodes::PRINT => self.print()?,
+
+                opcodes::CONSTANT_LONG => self.constant_long()?,
                 _ => panic!("Invalid or unimplemented opcode: {}", opcode),
             };
         }
     }
 
     #[inline]
-    fn push(&mut self, val: RuntimeValue) -> Result<(), LoxRuntimeErr> {
+    fn push(&mut self, val: RuntimeValue) -> RuntimeResult {
         if self.sp < STACK_SIZE {
             self.stack[self.sp] = val;
             self.sp += 1;
@@ -130,7 +145,7 @@ impl Vm {
     }
 
     #[inline]
-    fn constant(&mut self) -> Result<(), LoxRuntimeErr> {
+    fn constant(&mut self) -> RuntimeResult {
         let index = self.read_byte();
         let value = self.chunk.constants[index as usize];
 
@@ -139,7 +154,22 @@ impl Vm {
     }
 
     #[inline]
-    fn add(&mut self) -> Result<(), LoxRuntimeErr> {
+    fn constant_long(&mut self) -> RuntimeResult {
+        let mut bytes = [0; 4];
+
+        for i in 0..3 {
+            bytes[i] = self.read_byte();
+        }
+
+        let index = u32::from_le_bytes(bytes);
+        let value = self.chunk.constants[index as usize];
+
+        self.push(value)?;
+        Ok(())
+    }
+
+    #[inline]
+    fn add(&mut self) -> RuntimeResult {
         let first = self.peek(2)?;
         let second = self.peek(1)?;
 
@@ -151,6 +181,11 @@ impl Vm {
             }
             (RuntimeValue::String(s1), RuntimeValue::String(s2)) => unsafe {
                 let new_str_ptr = (**s1).concat(*s2);
+                //println!("concated: {}", (*new_str_ptr).as_str());
+                // FIXME: not great, add string to linked list
+                (*new_str_ptr).next_obj = self.objects;
+                self.objects = (*new_str_ptr).as_obj_ptr();
+
                 self.stack[self.sp - 2] = RuntimeValue::String(new_str_ptr);
                 self.sp -= 1;
                 // TODO: string concatenation could return an error
@@ -159,8 +194,8 @@ impl Vm {
             (RuntimeValue::Nil, _) | (_, RuntimeValue::Nil) => Err(LoxRuntimeErr::MissingOperand),
             _ => {
                 eprintln!(
-                    "runtime error at line {}: cannot apply '{}' to {} and {}",
-                    self.chunk.lines[self.ip],
+                    "Runtime error at line {}: cannot apply '{}' to {} and {}",
+                    self.chunk.get_line_at_ip(self.ip),
                     std::stringify!($name),
                     first.type_repr(),
                     second.type_repr()
@@ -178,14 +213,14 @@ impl Vm {
     binary_op!(less, <, Bool);
 
     #[inline]
-    fn not(&mut self) -> Result<(), LoxRuntimeErr> {
+    fn not(&mut self) -> RuntimeResult {
         let peeked = self.peek_mut(1)?;
         *peeked = RuntimeValue::Bool(Vm::is_falsy(*peeked));
         Ok(())
     }
 
     #[inline]
-    fn equal(&mut self) -> Result<(), LoxRuntimeErr> {
+    fn equal(&mut self) -> RuntimeResult {
         // TODO: execute equal in-place
         let equal = Vm::values_equal(self.pop()?, self.pop()?);
         self.push(RuntimeValue::Bool(equal))?;
@@ -193,7 +228,7 @@ impl Vm {
     }
 
     #[inline]
-    fn negate(&mut self) -> Result<(), LoxRuntimeErr> {
+    fn negate(&mut self) -> RuntimeResult {
         let peeked = self.peek_mut(1)?;
 
         match peeked {
@@ -204,6 +239,13 @@ impl Vm {
             }
             RuntimeValue::Nil => Err(LoxRuntimeErr::MissingOperand),
         }
+    }
+
+    #[inline]
+    fn print(&mut self) -> RuntimeResult {
+        let val = self.pop()?;
+        println!("{}", val);
+        Ok(())
     }
 
     #[inline]
@@ -224,6 +266,39 @@ impl Vm {
         match val {
             RuntimeValue::Nil | RuntimeValue::Bool(false) => true,
             _ => false,
+        }
+    }
+
+    fn link_objects(&mut self) {
+        for v in &mut self.chunk.constants {
+            match v {
+                RuntimeValue::String(str_ptr) => unsafe {
+                    (**str_ptr).next_obj = self.objects;
+                    //println!("linking {}", (**str_ptr).as_str());
+                    self.objects = (**str_ptr).as_obj_ptr();
+                },
+                _ => continue,
+            }
+        }
+    }
+}
+
+impl Drop for Vm {
+    fn drop(&mut self) {
+        // Free the runtime objects
+        let mut next_obj = self.objects;
+        while next_obj != ptr::null_mut() {
+            unsafe {
+                match (*next_obj).typ {
+                    ObjTyp::String => {
+                        let str_ptr = mem::transmute::<*mut Obj, *mut StringObj>(next_obj);
+                        //println!("freeing {}", (*str_ptr).as_str());
+                        let next_ptr = (*str_ptr).next_obj;
+                        ptr::drop_in_place(str_ptr);
+                        next_obj = next_ptr;
+                    }
+                }
+            }
         }
     }
 }

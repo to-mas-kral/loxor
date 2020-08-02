@@ -1,9 +1,14 @@
 use std::{
     alloc::{alloc, dealloc, realloc, Layout},
     mem::{size_of, transmute},
-    ptr::copy_nonoverlapping,
+    ptr::{copy_nonoverlapping, null_mut},
     slice, str,
 };
+
+use crate::table::hash_str;
+
+// TODO: challenge - add support for "constant" strings
+
 #[derive(Clone, Copy)]
 pub enum RuntimeValue {
     Nil,
@@ -12,57 +17,93 @@ pub enum RuntimeValue {
     String(*mut StringObj),
 }
 
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub enum ObjTyp {
+    String,
+}
+
+#[repr(C)]
+pub struct Obj {
+    pub typ: ObjTyp,
+}
+
 extern "C" {
     pub type opaque_slice;
 }
 
 #[repr(C)]
 pub struct StringObj {
-    pub len: usize,
-    pub contents: opaque_slice,
+    obj_typ: ObjTyp,
+    hash: u32,
+    len: usize,
+    pub next_obj: *mut Obj,
+    contents: opaque_slice,
 }
 
 // TODO: consult StringObj implementation with more experienced devs
 
+const BASE_STRING_OBJ_SIZE: usize =
+    size_of::<ObjTyp>() + size_of::<u32>() + size_of::<usize>() + size_of::<*mut Obj>();
+
 impl StringObj {
     pub fn new(contents: &str) -> *mut StringObj {
-        let size = size_of::<usize>() + contents.len();
-        let layout = Layout::from_size_align(size, size_of::<usize>()).expect("shouldn't happen");
+        // Create an allocation layout and allocate enough memory
+        let size = BASE_STRING_OBJ_SIZE + contents.len();
+        let layout = Layout::from_size_align(size, size_of::<usize>()).unwrap();
+
         unsafe {
             let ptr = alloc(layout);
-            let string_ptr = transmute::<*mut u8, *mut StringObj>(ptr);
-            (*string_ptr).len = contents.len();
 
+            // Initialize fields of the new object
+            let string_ptr = transmute::<*mut u8, *mut StringObj>(ptr);
+            (*string_ptr).obj_typ = ObjTyp::String;
+            (*string_ptr).hash = hash_str(contents);
+            (*string_ptr).len = contents.len();
+            (*string_ptr).next_obj = null_mut();
+
+            // Copy the string contents
             let contents_ptr = &mut (*string_ptr).contents as *mut opaque_slice as *mut u8;
-            copy_nonoverlapping::<u8>(contents.as_ptr(), contents_ptr, contents.len());
+            copy_nonoverlapping(contents.as_ptr(), contents_ptr, contents.len());
 
             string_ptr
         }
     }
 
-    // TODO: refactor string concat
+    // TODO: allocate bigger chunks less often
     pub fn concat(&mut self, other: *mut StringObj) -> *mut StringObj {
-        let size = size_of::<usize>() + self.len;
-        let prev_layout =
-            Layout::from_size_align(size, size_of::<usize>()).expect("shouldn't happen");
+        // Create a layout for realloc
+
         unsafe {
-            let prev_len = self.len;
-            self.len += (*other).len;
-            let new_size = size_of::<usize>() + self.len;
+            let size = BASE_STRING_OBJ_SIZE + self.len + (*other).len;
+            let prev_layout = Layout::from_size_align(size, size_of::<usize>()).unwrap();
 
-            let self_ptr = self as *mut StringObj as *mut u8;
-            let new_ptr = realloc(self_ptr, prev_layout, new_size);
+            // Allocate new space for the string
+            let new_ptr = alloc(prev_layout);
+            let new_ptr = transmute::<*mut u8, *mut StringObj>(new_ptr);
 
-            let contents_ptr_dst = &mut self.contents as *mut opaque_slice as *mut u8;
-            let contents_ptr_src = &mut (*other).contents as *mut opaque_slice as *mut u8;
+            let contents_ptr_dst = &mut (*new_ptr).contents as *mut opaque_slice as *mut u8;
 
+            let contents_self_ptr = &mut self.contents as *mut opaque_slice as *mut u8;
+            let contents_other_ptr = &mut (*other).contents as *mut opaque_slice as *mut u8;
+
+            // Copy contents of self to the new location
+            copy_nonoverlapping(contents_self_ptr, contents_ptr_dst, self.len);
+
+            // Copy contents of other to the new location
             copy_nonoverlapping(
-                contents_ptr_src,
-                contents_ptr_dst.add(prev_len),
+                contents_other_ptr,
+                contents_ptr_dst.add(self.len),
                 (*other).len,
             );
 
-            transmute::<*mut u8, *mut StringObj>(new_ptr)
+            // Initialize the other fields
+            (*new_ptr).obj_typ = ObjTyp::String;
+            (*new_ptr).len = self.len + (*other).len;
+            (*new_ptr).hash = hash_str((*new_ptr).as_str());
+            (*new_ptr).next_obj = null_mut();
+
+            new_ptr
         }
     }
 
@@ -74,8 +115,19 @@ impl StringObj {
         }
     }
 
-    pub fn _free(&mut self) {
-        todo!();
+    pub fn as_obj_ptr(&mut self) -> *mut Obj {
+        unsafe { transmute::<*mut StringObj, *mut Obj>(self as *mut StringObj) }
+    }
+}
+
+impl Drop for StringObj {
+    fn drop(&mut self) {
+        let size = BASE_STRING_OBJ_SIZE + self.len;
+        let layout = Layout::from_size_align(size, size_of::<usize>()).unwrap();
+
+        unsafe {
+            dealloc(self as *mut StringObj as *mut u8, layout);
+        }
     }
 }
 

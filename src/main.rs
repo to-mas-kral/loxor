@@ -4,15 +4,14 @@
 use std::{env, fs::File, io::prelude::*};
 
 mod bytecode;
-
 mod compiler;
-mod error;
 mod lexer;
 mod runtime_val;
+mod table;
 mod token;
 mod vm;
 
-fn main() -> Result<(), vm::LoxRuntimeErr> {
+fn main() {
     let args: Vec<String> = env::args().collect();
 
     let file_path = match args.len() {
@@ -27,9 +26,22 @@ fn main() -> Result<(), vm::LoxRuntimeErr> {
     let text = contents.as_str();
 
     let mut compiler = compiler::Compiler::new(text);
-    compiler.compile();
-    compiler.dump_bytecode();
+
+    match compiler.compile() {
+        Ok(()) => compiler.dump_bytecode(),
+        Err(e) => {
+            eprintln!("{:?}", e);
+            return;
+        }
+    }
 
     let mut vm = vm::Vm::new(compiler.bytecode);
-    return vm.execute();
+
+    match vm.execute() {
+        Ok(()) => return,
+        Err(e) => {
+            eprintln!("{:?}", e);
+            return;
+        }
+    }
 }
