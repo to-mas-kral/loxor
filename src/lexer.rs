@@ -106,11 +106,7 @@ impl<'t> Lexer<'t> {
                         }
                     }
                     '\"' => typ = self.string(&mut text),
-                    c => {
-                        typ = TokenType::Error(LexError::InvalidCharacter);
-                        // Assumes UTF-8 encoding, but whatever
-                        self.token_len += c.len_utf8() - 1;
-                    }
+                    _ => typ = TokenType::Error(LexError::InvalidCharacter),
                 };
                 let lexeme: &str = &self.text[..self.token_len];
                 self.text = &self.text[self.token_len..];
@@ -122,8 +118,10 @@ impl<'t> Lexer<'t> {
 
     #[inline]
     fn next_char(&mut self, text: &mut Text) -> Option<char> {
-        self.token_len += 1;
-        text.next()
+        text.next().and_then(|c| {
+            self.token_len += c.len_utf8();
+            Some(c)
+        })
     }
 
     #[inline]

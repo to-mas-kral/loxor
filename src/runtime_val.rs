@@ -148,7 +148,7 @@ impl core::fmt::Display for RuntimeValue {
 impl RuntimeValue {
     pub fn type_repr(&self) -> &str {
         match self {
-            RuntimeValue::Nil => "",
+            RuntimeValue::Nil => "nil",
             RuntimeValue::Bool(_) => "bool",
             RuntimeValue::Number(_) => "number",
             RuntimeValue::String(_) => "string",

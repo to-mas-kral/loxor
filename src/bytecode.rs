@@ -1,7 +1,7 @@
 use core::slice::Iter;
 use std::iter::Enumerate;
 
-use crate::runtime_val::RuntimeValue;
+use crate::runtime_val::{RuntimeValue, StringObj};
 
 pub struct Chunk {
     pub code: Vec<Bytecode>,
@@ -24,7 +24,7 @@ impl Chunk {
         }
     }
 
-    pub fn add_constant(&mut self, val: RuntimeValue, line: usize) {
+    pub fn emit_constant(&mut self, val: RuntimeValue, line: usize) {
         let index = self.constants.len();
         self.constants.push(val);
 
@@ -45,9 +45,50 @@ impl Chunk {
         }
     }
 
-    pub fn add_opocode(&mut self, opcode: Bytecode, line: usize) {
+    pub fn emit_constant_string(&mut self, slice: &str, line: usize) {
+        let string_ptr = StringObj::new(slice);
+        let string_val = RuntimeValue::String(string_ptr);
+        self.emit_constant(string_val, line);
+    }
+
+    pub fn emit_opocode(&mut self, opcode: Bytecode, line: usize) {
         self.code.push(opcode);
         self.at_line(line, 1);
+    }
+
+    fn identifier_constant(&mut self, name: &str) -> usize {
+        let string_ptr = StringObj::new(name);
+        let string_val = RuntimeValue::String(string_ptr);
+
+        let index = self.constants.len();
+        self.constants.push(string_val);
+
+        index
+    }
+
+    pub fn emit_declare_global(&mut self, name: &str, line: usize) {
+        let index = self.identifier_constant(name);
+
+        // TODO: this would eventually require DECLARE_GLOBAL_LONG etc...
+        self.code.push(opcodes::DEFINE_GLOBAL);
+        self.code.push(index as u8);
+        self.at_line(line, 2);
+    }
+
+    pub fn emit_get_global(&mut self, name: &str, line: usize) {
+        let index = self.identifier_constant(name);
+
+        self.code.push(opcodes::GET_GLOBAL);
+        self.code.push(index as u8);
+        self.at_line(line, 2);
+    }
+
+    pub fn emit_set_global(&mut self, name: &str, line: usize) {
+        let index = self.identifier_constant(name);
+
+        self.code.push(opcodes::SET_GLOBAL);
+        self.code.push(index as u8);
+        self.at_line(line, 2);
     }
 
     pub fn disassemble(&self) {
@@ -60,11 +101,14 @@ impl Chunk {
             print!("0x{:4X}     {:4}     ", offset, self.get_line_at_ip(offset));
             match *opcode {
                 opcodes::RETURN => println!("RETURN"),
-                opcodes::CONSTANT => self.constant(&mut opcodes),
+                opcodes::CONSTANT => self.disas_constant(&mut opcodes),
                 opcodes::NIL => println!("NIL"),
                 opcodes::TRUE => println!("TRUE"),
                 opcodes::FALSE => println!("FALSE"),
                 opcodes::POP => println!("POP"),
+                opcodes::GET_GLOBAL => self.disas_get_global(&mut opcodes),
+                opcodes::DEFINE_GLOBAL => self.disas_define_global(&mut opcodes),
+                opcodes::SET_GLOBAL => self.disas_set_global(&mut opcodes),
                 opcodes::EQUAL => println!("EQUAL"),
                 opcodes::GREATER => println!("GREATER"),
                 opcodes::LESS => println!("LESS"),
@@ -76,30 +120,30 @@ impl Chunk {
                 opcodes::NEGATE => println!("NEGATE"),
                 opcodes::PRINT => println!("PRINT"),
 
-                opcodes::CONSTANT_LONG => self.constant_long(&mut opcodes),
+                opcodes::CONSTANT_LONG => self.disas_constant_long(&mut opcodes),
                 _ => unreachable!(),
             }
         }
     }
 
-    fn constant(&self, code: &mut Enumerate<Iter<u8>>) {
+    fn disas_constant(&self, code: &mut Enumerate<Iter<u8>>) {
         if let Some((_, index)) = code.next() {
             let val = self.constants[*index as usize];
 
             println!("CONSTANT    c[{}] = {}", index, val);
         } else {
-            panic!("Constant is missing the index");
+            panic!("COMPILER ERROR: constant is missing the index");
         }
     }
 
-    fn constant_long(&self, code: &mut Enumerate<Iter<u8>>) {
+    fn disas_constant_long(&self, code: &mut Enumerate<Iter<u8>>) {
         let mut bytes = [0; 4];
 
         for i in 0..3 {
             if let Some((_, index_byte)) = code.next() {
                 bytes[i] = *index_byte;
             } else {
-                panic!("Constant long is missing the index");
+                panic!("COMPILER ERROR: constant long is missing the index");
             }
         }
 
@@ -107,6 +151,36 @@ impl Chunk {
         let val = self.constants[index];
 
         println!("CONSTANT_LONG    c[{}] = {}", index, val);
+    }
+
+    fn disas_get_global(&self, code: &mut Enumerate<Iter<u8>>) {
+        if let Some((_, index)) = code.next() {
+            let val = self.constants[*index as usize];
+
+            println!("GET GLOBAL    '{}'", val);
+        } else {
+            panic!("COMPILER ERROR: global variable expression operand missing");
+        }
+    }
+
+    fn disas_define_global(&self, code: &mut Enumerate<Iter<u8>>) {
+        if let Some((_, index)) = code.next() {
+            let val = self.constants[*index as usize];
+
+            println!("DEFINE GLOBAL    '{}'", val);
+        } else {
+            panic!("COMPILER ERROR: global variable definition operand missing");
+        }
+    }
+
+    fn disas_set_global(&self, code: &mut Enumerate<Iter<u8>>) {
+        if let Some((_, index)) = code.next() {
+            let val = self.constants[*index as usize];
+
+            println!("SET GLOBAL    '{}'", val);
+        } else {
+            panic!("COMPILER ERROR: global variable assignment operand missing");
+        }
     }
 
     /*
@@ -154,9 +228,9 @@ pub(crate) mod opcodes {
     pub const POP: Bytecode = 4;
     //pub const GET_LOCAL: Bytecode = 5;
     //pub const SET_LOCAL: Bytecode = 6;
-    //pub const GET_GLOBAL: Bytecode = 7;
-    //pub const DEFINE_GLOBAL: Bytecode = 8;
-    //pub const SET_GLOBAL: Bytecode = 9;
+    pub const GET_GLOBAL: Bytecode = 7;
+    pub const DEFINE_GLOBAL: Bytecode = 8;
+    pub const SET_GLOBAL: Bytecode = 9;
     //pub const GET_UPVALUE: Bytecode = 10;
     //pub const SET_UPVALUE: Bytecode = 11;
     //pub const GET_PROPERTY: Bytecode = 12;

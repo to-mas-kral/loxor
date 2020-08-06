@@ -11,9 +11,12 @@ use crate::{
 type CompileResult = Result<(), CompileErr>;
 
 pub struct Compiler<'t> {
-    text: &'t str,
+    //text: &'t str,
     lexer: Lexer<'t>,
     peeked_tok: Option<Token<'t>>,
+
+    locals: Vec<Local<'t>>,
+    scope_depth: usize,
 
     pub bytecode: Chunk,
 
@@ -23,9 +26,12 @@ pub struct Compiler<'t> {
 impl<'t> Compiler<'t> {
     pub fn new(text: &str) -> Compiler {
         Compiler {
-            text,
+            //text,
             lexer: Lexer::new(text),
             peeked_tok: None,
+
+            locals: Vec::new(),
+            scope_depth: 0,
 
             bytecode: Chunk::new(),
 
@@ -36,6 +42,10 @@ impl<'t> Compiler<'t> {
     pub fn dump_bytecode(&mut self) {
         self.bytecode.disassemble()
     }
+
+    /*
+        program        → declaration* EOF ;
+    */
 
     pub fn compile(&mut self) -> CompileResult {
         loop {
@@ -57,9 +67,24 @@ impl<'t> Compiler<'t> {
             }
         }
 
-        self.bytecode.add_opocode(opcodes::RETURN, 0);
+        self.bytecode.emit_opocode(opcodes::RETURN, 0);
         self.last_error
     }
+
+    /*
+        declaration → classDecl
+            | funDecl
+            | varDecl
+            | statement ;
+
+        classDecl      → "class" IDENTIFIER ( "<" IDENTIFIER )? "{" function* "}" ;
+        funDecl        → "fun" function ;
+        varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
+
+        function       → IDENTIFIER "(" parameters? ")" block ;
+        parameters     → IDENTIFIER ( "," IDENTIFIER )* ;
+        arguments      → expression ( "," expression )* ;
+    */
 
     fn declaration(&mut self, next_tok: &Token) -> CompileResult {
         match next_tok.typ {
@@ -79,8 +104,55 @@ impl<'t> Compiler<'t> {
     }
 
     fn variable_declaration(&mut self) -> CompileResult {
-        unimplemented!();
+        let ident_tok = self.expect_token(TokenType::Identifier, |line, typ| {
+            eprintln!(
+                "Parse error at line {}: expected identifier after 'var' keyword, got '{:?}'",
+                line, typ
+            )
+        })?;
+
+        let tok = self.peek_token();
+        if let TokenType::Equal = tok.typ {
+            // Skip the equal token
+            self.next_token().unwrap();
+
+            let expr_tok = self.next_token()?;
+            self.expression(&expr_tok)?;
+        } else {
+            self.bytecode.emit_opocode(opcodes::NIL, ident_tok.line);
+        }
+
+        self.expect_token(TokenType::Semicolon, |line, typ| {
+            eprintln!(
+                "Parse error at line {}: expected 'semicolon' after variable declaration, got: '{:?}'",
+                line, typ
+            )
+        })?;
+
+        self.bytecode
+            .emit_declare_global(ident_tok.lexeme, ident_tok.line);
+
+        Ok(())
     }
+
+    /*
+        statement → exprStmt
+            | forStmt
+            | ifStmt
+            | printStmt
+            | returnStmt
+            | whileStmt
+            | block ;
+
+        exprStmt       → expression ";" ;
+        forStmt        → "for" "(" ( varDecl | exprStmt | ";" )
+                            expression? ";" expression? ")" statement ;
+        ifStmt         → "if" "(" expression ")" statement ( "else" statement )? ;
+        printStmt      → "print" expression ";" ;
+        returnStmt     → "return" expression? ";" ;
+        whileStmt      → "while" "(" expression ")" statement ;
+        block          → "{" declaration* "}" ;
+    */
 
     fn statement(&mut self, tok: &Token) -> CompileResult {
         match tok.typ {
@@ -89,11 +161,16 @@ impl<'t> Compiler<'t> {
             TokenType::Print => self.print_stmt(&tok),
             TokenType::Return => self.return_stmt(),
             TokenType::While => self.while_stmt(),
-            TokenType::LeftBrace => self.block_stmt(),
+            TokenType::LeftBrace => {
+                self.scope_depth += 1;
+                self.block_stmt()?;
+                self.scope_depth -= 1;
+                Ok(())
+            }
             typ if Compiler::is_expr_start(typ) => self.expr_stmt(tok),
             _ => {
                 eprintln!(
-                    "Parse error at line {}: expected declaration or statement, got: {}",
+                    "Parse error at line {}: expected declaration or statement, got: '{}'",
                     tok.line, tok.lexeme
                 );
                 Err(CompileErr::ExpectedDeclOrStmt)
@@ -103,8 +180,13 @@ impl<'t> Compiler<'t> {
 
     fn expr_stmt(&mut self, tok: &Token) -> CompileResult {
         self.expression(tok)?;
-        self.expect_token(TokenType::Semicolon)?;
-        self.bytecode.add_opocode(opcodes::POP, tok.line);
+        self.expect_token(TokenType::Semicolon, |line, typ| {
+            eprintln!(
+                "Parse error at line {}: expected 'semicolon' after expression, got: '{:?}'",
+                line, typ
+            )
+        })?;
+        self.bytecode.emit_opocode(opcodes::POP, tok.line);
         Ok(())
     }
 
@@ -119,8 +201,13 @@ impl<'t> Compiler<'t> {
     fn print_stmt(&mut self, print_tok: &Token) -> CompileResult {
         let first_expr_tok = self.next_token()?;
         self.expression(&first_expr_tok)?;
-        self.expect_token(TokenType::Semicolon)?;
-        self.bytecode.add_opocode(opcodes::PRINT, print_tok.line);
+        self.expect_token(TokenType::Semicolon, |line, typ| {
+            eprintln!(
+                "Parse error at line {}: expected 'semicolon' after expression, got: '{:?}'",
+                line, typ
+            )
+        })?;
+        self.bytecode.emit_opocode(opcodes::PRINT, print_tok.line);
         Ok(())
     }
 
@@ -133,8 +220,39 @@ impl<'t> Compiler<'t> {
     }
 
     fn block_stmt(&mut self) -> CompileResult {
-        unimplemented!()
+        loop {
+            let tok = self.next_token()?;
+            match tok.typ {
+                TokenType::RightBrace => return Ok(()),
+                TokenType::Eof => {
+                    eprintln!("Parse error at line {}: expected a closing '}}'", tok.line);
+
+                    return Err(CompileErr::UnclosedBlock);
+                }
+                _ => self.declaration(&tok)?,
+            }
+        }
     }
+
+    /*
+        expression     → assignment ;
+
+        assignment     → ( call "." )? IDENTIFIER "=" assignment
+               | logic_or ;
+
+        logic_or       → logic_and ( "or" logic_and )* ;
+        logic_and      → equality ( "and" equality )* ;
+        equality       → comparison ( ( "!=" | "==" ) comparison )* ;
+        comparison     → addition ( ( ">" | ">=" | "<" | "<=" ) addition )* ;
+        addition       → multiplication ( ( "-" | "+" ) multiplication )* ;
+        multiplication → unary ( ( "/" | "*" ) unary )* ;
+
+        call           → primary ( "(" arguments? ")" | "." IDENTIFIER )* ;
+        primary        → "true" | "false" | "nil" | "this"
+        unary          → ( "!" | "-" ) unary | call ;
+               | NUMBER | STRING | IDENTIFIER | "(" expression ")"
+               | "super" "." IDENTIFIER ;
+    */
 
     fn expression(&mut self, tok: &Token) -> CompileResult {
         if Compiler::is_expr_start(tok.typ) {
@@ -142,7 +260,7 @@ impl<'t> Compiler<'t> {
             Ok(())
         } else {
             eprintln!(
-                "Parse error at line {}: expected start of expression, got {:?}",
+                "Parse error at line {}: expected start of expression, got '{:?}'",
                 tok.line, tok.typ
             );
 
@@ -151,7 +269,8 @@ impl<'t> Compiler<'t> {
     }
 
     fn parse_precedence(&mut self, prec: ParsePrecedence, tok: &Token) -> CompileResult {
-        self.prefix_rule(tok)?;
+        let is_assign_target = prec <= parse_precedence::ASSIGNMENT;
+        self.prefix_rule(tok, is_assign_target)?;
 
         loop {
             let peeked = self.peek_token();
@@ -164,13 +283,27 @@ impl<'t> Compiler<'t> {
             }
         }
 
+        // TODO: I don't understand this
+        if is_assign_target && self.peek_token().typ == TokenType::Equal {
+            eprintln!(
+                "Parse error at line {}: invalid assignment target",
+                tok.line
+            );
+            return Err(CompileErr::InvalidAssignmentTarget);
+        }
+
         Ok(())
     }
 
     fn grouping(&mut self) -> CompileResult {
         let next_tok = self.next_token()?;
         self.expression(&next_tok)?;
-        self.expect_token(TokenType::RightParen)?;
+        self.expect_token(TokenType::RightParen, |line, typ| {
+            eprintln!(
+                "Parse error at line {}: expected a matching right parentheses ')', got: '{:?}'",
+                line, typ
+            )
+        })?;
         Ok(())
     }
 
@@ -179,27 +312,44 @@ impl<'t> Compiler<'t> {
         self.parse_precedence(Compiler::precedence_rule(tok.typ) + 1, &next_tok)?;
 
         match tok.typ {
-            TokenType::Plus => self.bytecode.add_opocode(opcodes::ADD, tok.line),
-            TokenType::Minus => self.bytecode.add_opocode(opcodes::SUBTRACT, tok.line),
-            TokenType::Star => self.bytecode.add_opocode(opcodes::MULTIPLY, tok.line),
-            TokenType::Slash => self.bytecode.add_opocode(opcodes::DIVIDE, tok.line),
+            TokenType::Plus => self.bytecode.emit_opocode(opcodes::ADD, tok.line),
+            TokenType::Minus => self.bytecode.emit_opocode(opcodes::SUBTRACT, tok.line),
+            TokenType::Star => self.bytecode.emit_opocode(opcodes::MULTIPLY, tok.line),
+            TokenType::Slash => self.bytecode.emit_opocode(opcodes::DIVIDE, tok.line),
             TokenType::BangEqual => {
-                self.bytecode.add_opocode(opcodes::EQUAL, tok.line);
-                self.bytecode.add_opocode(opcodes::NOT, tok.line);
+                self.bytecode.emit_opocode(opcodes::EQUAL, tok.line);
+                self.bytecode.emit_opocode(opcodes::NOT, tok.line);
             }
-            TokenType::EqualEqual => self.bytecode.add_opocode(opcodes::EQUAL, tok.line),
-            TokenType::Greater => self.bytecode.add_opocode(opcodes::GREATER, tok.line),
+            TokenType::EqualEqual => self.bytecode.emit_opocode(opcodes::EQUAL, tok.line),
+            TokenType::Greater => self.bytecode.emit_opocode(opcodes::GREATER, tok.line),
             TokenType::GreaterEqual => {
-                self.bytecode.add_opocode(opcodes::LESS, tok.line);
-                self.bytecode.add_opocode(opcodes::NOT, tok.line);
+                self.bytecode.emit_opocode(opcodes::LESS, tok.line);
+                self.bytecode.emit_opocode(opcodes::NOT, tok.line);
             }
-            TokenType::Less => self.bytecode.add_opocode(opcodes::LESS, tok.line),
+            TokenType::Less => self.bytecode.emit_opocode(opcodes::LESS, tok.line),
             TokenType::LessEqual => {
-                self.bytecode.add_opocode(opcodes::GREATER, tok.line);
-                self.bytecode.add_opocode(opcodes::NOT, tok.line);
+                self.bytecode.emit_opocode(opcodes::GREATER, tok.line);
+                self.bytecode.emit_opocode(opcodes::NOT, tok.line);
             }
             _ => unreachable!(),
         };
+
+        Ok(())
+    }
+
+    fn variable(&mut self, tok: &Token, is_assign_target: bool) -> CompileResult {
+        // TODO: challenge 1 & 2 - optimize ways tof accessing anddefining GLOBAL variables
+
+        let peeked = self.peek_token();
+        if is_assign_target && peeked.typ == TokenType::Equal {
+            // Skip the equals
+            self.next_token().unwrap();
+            let next_tok = self.next_token()?;
+            self.expression(&next_tok)?;
+            self.bytecode.emit_set_global(tok.lexeme, tok.line);
+        } else {
+            self.bytecode.emit_get_global(tok.lexeme, tok.line);
+        }
 
         Ok(())
     }
@@ -211,8 +361,8 @@ impl<'t> Compiler<'t> {
         self.parse_precedence(parse_precedence::UNARY, &next_tok)?;
 
         match operator_type {
-            TokenType::Minus => self.bytecode.add_opocode(opcodes::NEGATE, tok.line),
-            TokenType::Bang => self.bytecode.add_opocode(opcodes::NOT, tok.line),
+            TokenType::Minus => self.bytecode.emit_opocode(opcodes::NEGATE, tok.line),
+            TokenType::Bang => self.bytecode.emit_opocode(opcodes::NOT, tok.line),
             _ => unreachable!(),
         }
 
@@ -223,12 +373,12 @@ impl<'t> Compiler<'t> {
         match tok.lexeme.parse::<f64>() {
             Ok(num) => {
                 self.bytecode
-                    .add_constant(RuntimeValue::Number(num), tok.line);
+                    .emit_constant(RuntimeValue::Number(num), tok.line);
                 Ok(())
             }
             Err(_) => {
                 eprintln!(
-                    "Parse error at line {}: couldn't parse {} as a number",
+                    "Parse error at line {}: couldn't parse '{}' as a number",
                     tok.line, tok.lexeme
                 );
                 Err(CompileErr::DoubleParse)
@@ -238,24 +388,18 @@ impl<'t> Compiler<'t> {
 
     fn literal(&mut self, tok: &Token) {
         match tok.typ {
-            TokenType::Nil => self.bytecode.add_opocode(opcodes::NIL, tok.line),
-            TokenType::True => self.bytecode.add_opocode(opcodes::TRUE, tok.line),
-            TokenType::False => self.bytecode.add_opocode(opcodes::FALSE, tok.line),
+            TokenType::Nil => self.bytecode.emit_opocode(opcodes::NIL, tok.line),
+            TokenType::True => self.bytecode.emit_opocode(opcodes::TRUE, tok.line),
+            TokenType::False => self.bytecode.emit_opocode(opcodes::FALSE, tok.line),
             _ => unreachable!(),
         }
     }
 
     fn string(&mut self, tok: &Token) {
-        let slice = &tok
-            .lexeme
-            .strip_prefix("\"")
-            .unwrap()
-            .strip_suffix("\"")
-            .unwrap();
-
-        let string_ptr = StringObj::new(slice);
-        let string_val = RuntimeValue::String(string_ptr);
-        self.bytecode.add_constant(string_val, tok.line);
+        // Srings should always start and end with a ", if not,
+        // something has gone wrong in the lexer
+        let slice = &tok.lexeme[1..tok.lexeme.len() - 1];
+        self.bytecode.emit_constant_string(slice, tok.line);
     }
 
     fn precedence_rule(typ: TokenType) -> ParsePrecedence {
@@ -271,17 +415,18 @@ impl<'t> Compiler<'t> {
         }
     }
 
-    fn prefix_rule(&mut self, tok: &Token) -> CompileResult {
+    fn prefix_rule(&mut self, tok: &Token, is_assign_target: bool) -> CompileResult {
         match tok.typ {
+            TokenType::Identifier => self.variable(tok, is_assign_target)?,
             TokenType::LeftParen => self.grouping()?,
-            TokenType::Minus | TokenType::Bang => self.unary(tok)?,
             TokenType::Number => self.number(tok)?,
-            TokenType::Nil | TokenType::False | TokenType::True => self.literal(tok),
             TokenType::String => self.string(tok),
+            TokenType::Minus | TokenType::Bang => self.unary(tok)?,
+            TokenType::Nil | TokenType::False | TokenType::True => self.literal(tok),
             _ => (),
         };
 
-        return Ok(());
+        Ok(())
     }
 
     fn infix_rule(&mut self, tok: &Token) -> CompileResult {
@@ -348,7 +493,7 @@ impl<'t> Compiler<'t> {
                 match next_tok.typ {
                     TokenType::Whitespace | TokenType::Newline | TokenType::Comment => continue,
                     TokenType::Error(err) => {
-                        eprintln!("Lexing error at line {}: {:?}", next_tok.line, err);
+                        eprintln!("Lexing error at line {}: '{:?}'", next_tok.line, err);
 
                         return Err(CompileErr::LexError);
                     }
@@ -376,18 +521,30 @@ impl<'t> Compiler<'t> {
         self.peeked_tok.as_ref().unwrap()
     }
 
-    fn expect_token(&mut self, expected_tok: TokenType) -> CompileResult {
+    fn expect_token<F: Fn(usize, TokenType)>(
+        &mut self,
+        expected_tok: TokenType,
+        error_msg: F,
+    ) -> Result<Token<'t>, CompileErr> {
         let tok = self.next_token()?;
 
         if expected_tok != tok.typ {
-            eprintln!(
-                "Parse error at line {}: exected {:?}, got {:?}",
-                tok.line, expected_tok, tok.typ
-            );
+            error_msg(tok.line, tok.typ);
             return Err(CompileErr::UnexpectedToken);
         }
 
-        Ok(())
+        Ok(tok)
+    }
+}
+
+struct Local<'n> {
+    name: &'n str,
+    depth: usize,
+}
+
+impl<'n> Local<'n> {
+    pub fn new(name: &str, depth: usize) -> Local {
+        Local { name, depth }
     }
 }
 
@@ -395,9 +552,12 @@ impl<'t> Compiler<'t> {
 pub enum CompileErr {
     ExpectedDeclOrStmt,
     ExpectedExpr,
+    ExpectedIdentifier,
     UnexpectedToken,
     DoubleParse,
     LexError,
+    InvalidAssignmentTarget,
+    UnclosedBlock,
 }
 
 type ParsePrecedence = u8;

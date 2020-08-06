@@ -29,10 +29,7 @@ fn main() {
 
     match compiler.compile() {
         Ok(()) => compiler.dump_bytecode(),
-        Err(e) => {
-            eprintln!("{:?}", e);
-            return;
-        }
+        Err(_) => return,
     }
 
     let mut vm = vm::Vm::new(compiler.bytecode);

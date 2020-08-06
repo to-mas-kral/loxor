@@ -1,4 +1,7 @@
-use std::{mem, ptr};
+use std::{
+    collections::{HashMap, HashSet},
+    mem, ptr,
+};
 
 use super::{
     bytecode::{opcodes, Bytecode, Chunk},
@@ -9,13 +12,14 @@ const STACK_SIZE: usize = 0xFF;
 
 type RuntimeResult = Result<(), LoxRuntimeErr>;
 
-pub struct Vm {
+pub struct Vm<'s> {
     chunk: Chunk,
     ip: usize,
     sp: usize,
 
     stack: [RuntimeValue; STACK_SIZE],
 
+    strings: HashSet<&'s StringObj>,
     objects: *mut Obj,
 }
 
@@ -32,9 +36,6 @@ macro_rules! binary_op {
                     self.sp -= 1;
                     Ok(())
                 }
-                (RuntimeValue::Nil, _) | (_, RuntimeValue::Nil) => {
-                    Err(LoxRuntimeErr::MissingOperand)
-                }
                 _ => {
                     eprintln!(
                         "runtime error at line {}: cannot apply '{}' to {} and {}",
@@ -50,8 +51,8 @@ macro_rules! binary_op {
     };
 }
 
-impl Vm {
-    pub fn new(chunk: Chunk) -> Vm {
+impl<'s> Vm<'s> {
+    pub fn new(chunk: Chunk) -> Vm<'s> {
         let mut vm = Vm {
             chunk,
             ip: 0,
@@ -59,10 +60,12 @@ impl Vm {
 
             stack: [RuntimeValue::Nil; STACK_SIZE],
 
+            strings: HashSet::new(),
             objects: ptr::null_mut(),
         };
 
         vm.link_objects();
+        vm.intern_strings();
 
         vm
     }
@@ -73,13 +76,18 @@ impl Vm {
             self.ip += 1;
 
             match opcode {
-                opcodes::RETURN => return Ok(()),
                 opcodes::CONSTANT => self.constant()?,
                 opcodes::NIL => self.push(RuntimeValue::Nil)?,
                 opcodes::TRUE => self.push(RuntimeValue::Bool(true))?,
                 opcodes::FALSE => self.push(RuntimeValue::Bool(false))?,
                 opcodes::POP => {
                     self.pop()?;
+                }
+                opcodes::GET_GLOBAL => {
+                    unimplemented!("global variable expressions are unimplemented")
+                }
+                opcodes::DEFINE_GLOBAL => {
+                    unimplemented!("global variable definitions are unimplemented")
                 }
                 opcodes::EQUAL => self.equal()?,
                 opcodes::GREATER => self.greater()?,
@@ -91,6 +99,7 @@ impl Vm {
                 opcodes::NOT => self.not()?,
                 opcodes::NEGATE => self.negate()?,
                 opcodes::PRINT => self.print()?,
+                opcodes::RETURN => return Ok(()),
 
                 opcodes::CONSTANT_LONG => self.constant_long()?,
                 _ => panic!("Invalid or unimplemented opcode: {}", opcode),
@@ -98,7 +107,7 @@ impl Vm {
         }
     }
 
-    #[inline]
+    #[inline(never)]
     fn push(&mut self, val: RuntimeValue) -> RuntimeResult {
         if self.sp < STACK_SIZE {
             self.stack[self.sp] = val;
@@ -109,7 +118,7 @@ impl Vm {
         }
     }
 
-    #[inline]
+    #[inline(never)]
     fn pop(&mut self) -> Result<RuntimeValue, LoxRuntimeErr> {
         if self.sp >= 1 {
             self.sp -= 1;
@@ -119,7 +128,7 @@ impl Vm {
         }
     }
 
-    #[inline]
+    #[inline(never)]
     fn peek_mut(&mut self, distance: usize) -> Result<&mut RuntimeValue, LoxRuntimeErr> {
         if self.sp.checked_sub(distance).is_some() {
             Ok(&mut self.stack[self.sp - distance])
@@ -128,7 +137,7 @@ impl Vm {
         }
     }
 
-    #[inline]
+    #[inline(never)]
     fn peek(&self, distance: usize) -> Result<&RuntimeValue, LoxRuntimeErr> {
         if self.sp.checked_sub(distance).is_some() {
             Ok(&self.stack[self.sp - distance])
@@ -137,14 +146,14 @@ impl Vm {
         }
     }
 
-    #[inline]
+    #[inline(never)]
     fn read_byte(&mut self) -> Bytecode {
         let val = self.chunk.code[self.ip];
         self.ip += 1;
         val
     }
 
-    #[inline]
+    #[inline(never)]
     fn constant(&mut self) -> RuntimeResult {
         let index = self.read_byte();
         let value = self.chunk.constants[index as usize];
@@ -153,7 +162,7 @@ impl Vm {
         Ok(())
     }
 
-    #[inline]
+    #[inline(never)]
     fn constant_long(&mut self) -> RuntimeResult {
         let mut bytes = [0; 4];
 
@@ -168,7 +177,7 @@ impl Vm {
         Ok(())
     }
 
-    #[inline]
+    #[inline(never)]
     fn add(&mut self) -> RuntimeResult {
         let first = self.peek(2)?;
         let second = self.peek(1)?;
@@ -191,12 +200,10 @@ impl Vm {
                 // TODO: string concatenation could return an error
                 Ok(())
             },
-            (RuntimeValue::Nil, _) | (_, RuntimeValue::Nil) => Err(LoxRuntimeErr::MissingOperand),
             _ => {
                 eprintln!(
-                    "Runtime error at line {}: cannot apply '{}' to {} and {}",
+                    "Runtime error at line {}: cannot apply 'add' to {} and {}",
                     self.chunk.get_line_at_ip(self.ip),
-                    std::stringify!($name),
                     first.type_repr(),
                     second.type_repr()
                 );
@@ -212,14 +219,14 @@ impl Vm {
     binary_op!(greater, >, Bool);
     binary_op!(less, <, Bool);
 
-    #[inline]
+    #[inline(never)]
     fn not(&mut self) -> RuntimeResult {
         let peeked = self.peek_mut(1)?;
         *peeked = RuntimeValue::Bool(Vm::is_falsy(*peeked));
         Ok(())
     }
 
-    #[inline]
+    #[inline(never)]
     fn equal(&mut self) -> RuntimeResult {
         // TODO: execute equal in-place
         let equal = Vm::values_equal(self.pop()?, self.pop()?);
@@ -227,7 +234,7 @@ impl Vm {
         Ok(())
     }
 
-    #[inline]
+    #[inline(never)]
     fn negate(&mut self) -> RuntimeResult {
         let peeked = self.peek_mut(1)?;
 
@@ -241,14 +248,14 @@ impl Vm {
         }
     }
 
-    #[inline]
+    #[inline(never)]
     fn print(&mut self) -> RuntimeResult {
         let val = self.pop()?;
         println!("{}", val);
         Ok(())
     }
 
-    #[inline]
+    #[inline(never)]
     fn values_equal(val1: RuntimeValue, val2: RuntimeValue) -> bool {
         match (val1, val2) {
             (RuntimeValue::Bool(b1), RuntimeValue::Bool(b2)) => b1 == b2,
@@ -261,7 +268,7 @@ impl Vm {
         }
     }
 
-    #[inline]
+    #[inline(never)]
     fn is_falsy(val: RuntimeValue) -> bool {
         match val {
             RuntimeValue::Nil | RuntimeValue::Bool(false) => true,
@@ -274,16 +281,17 @@ impl Vm {
             match v {
                 RuntimeValue::String(str_ptr) => unsafe {
                     (**str_ptr).next_obj = self.objects;
-                    //println!("linking {}", (**str_ptr).as_str());
                     self.objects = (**str_ptr).as_obj_ptr();
                 },
                 _ => continue,
             }
         }
     }
+
+    fn intern_strings(&mut self) {}
 }
 
-impl Drop for Vm {
+impl<'s> Drop for Vm<'s> {
     fn drop(&mut self) {
         // Free the runtime objects
         let mut next_obj = self.objects;
