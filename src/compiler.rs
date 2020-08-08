@@ -67,7 +67,7 @@ impl<'t> Compiler<'t> {
             }
         }
 
-        self.bytecode.emit_opocode(opcodes::RETURN, 0);
+        self.bytecode.emit_opcode(opcodes::RETURN, 0);
         self.last_error
     }
 
@@ -119,7 +119,7 @@ impl<'t> Compiler<'t> {
             let expr_tok = self.next_token()?;
             self.expression(&expr_tok)?;
         } else {
-            self.bytecode.emit_opocode(opcodes::NIL, ident_tok.line);
+            self.bytecode.emit_opcode(opcodes::NIL, ident_tok.line);
         }
 
         self.expect_token(TokenType::Semicolon, |line, typ| {
@@ -129,8 +129,32 @@ impl<'t> Compiler<'t> {
             )
         })?;
 
-        self.bytecode
-            .emit_declare_global(ident_tok.lexeme, ident_tok.line);
+        if self.scope_depth == 0 {
+            // Only globals need explicit declaration
+            self.bytecode
+                .emit_declare_global(ident_tok.lexeme, ident_tok.line);
+        } else {
+            if self.scope_depth > 255 {
+                // TODO: challenge - support more than 255 local variables
+                panic!("only 255 local variables are currently supported");
+            }
+
+            for l in self
+                .locals
+                .iter()
+                .rev()
+                .filter(|l| l.depth == self.scope_depth)
+            {
+                if l.name == ident_tok.lexeme {
+                    eprintln!("Parse error at line {}: local variable '{}' delcared multiple times in the same scope", ident_tok.line, ident_tok.lexeme);
+
+                    return Err(CompileErr::VariableRedeclaration);
+                }
+            }
+
+            let local = Local::new(ident_tok.lexeme, self.scope_depth);
+            self.locals.push(local);
+        }
 
         Ok(())
     }
@@ -162,9 +186,9 @@ impl<'t> Compiler<'t> {
             TokenType::Return => self.return_stmt(),
             TokenType::While => self.while_stmt(),
             TokenType::LeftBrace => {
-                self.scope_depth += 1;
+                self.begin_scope();
                 self.block_stmt()?;
-                self.scope_depth -= 1;
+                self.end_scope();
                 Ok(())
             }
             typ if Compiler::is_expr_start(typ) => self.expr_stmt(tok),
@@ -186,7 +210,7 @@ impl<'t> Compiler<'t> {
                 line, typ
             )
         })?;
-        self.bytecode.emit_opocode(opcodes::POP, tok.line);
+        self.bytecode.emit_opcode(opcodes::POP, tok.line);
         Ok(())
     }
 
@@ -207,7 +231,7 @@ impl<'t> Compiler<'t> {
                 line, typ
             )
         })?;
-        self.bytecode.emit_opocode(opcodes::PRINT, print_tok.line);
+        self.bytecode.emit_opcode(opcodes::PRINT, print_tok.line);
         Ok(())
     }
 
@@ -312,24 +336,24 @@ impl<'t> Compiler<'t> {
         self.parse_precedence(Compiler::precedence_rule(tok.typ) + 1, &next_tok)?;
 
         match tok.typ {
-            TokenType::Plus => self.bytecode.emit_opocode(opcodes::ADD, tok.line),
-            TokenType::Minus => self.bytecode.emit_opocode(opcodes::SUBTRACT, tok.line),
-            TokenType::Star => self.bytecode.emit_opocode(opcodes::MULTIPLY, tok.line),
-            TokenType::Slash => self.bytecode.emit_opocode(opcodes::DIVIDE, tok.line),
+            TokenType::Plus => self.bytecode.emit_opcode(opcodes::ADD, tok.line),
+            TokenType::Minus => self.bytecode.emit_opcode(opcodes::SUBTRACT, tok.line),
+            TokenType::Star => self.bytecode.emit_opcode(opcodes::MULTIPLY, tok.line),
+            TokenType::Slash => self.bytecode.emit_opcode(opcodes::DIVIDE, tok.line),
             TokenType::BangEqual => {
-                self.bytecode.emit_opocode(opcodes::EQUAL, tok.line);
-                self.bytecode.emit_opocode(opcodes::NOT, tok.line);
+                self.bytecode.emit_opcode(opcodes::EQUAL, tok.line);
+                self.bytecode.emit_opcode(opcodes::NOT, tok.line);
             }
-            TokenType::EqualEqual => self.bytecode.emit_opocode(opcodes::EQUAL, tok.line),
-            TokenType::Greater => self.bytecode.emit_opocode(opcodes::GREATER, tok.line),
+            TokenType::EqualEqual => self.bytecode.emit_opcode(opcodes::EQUAL, tok.line),
+            TokenType::Greater => self.bytecode.emit_opcode(opcodes::GREATER, tok.line),
             TokenType::GreaterEqual => {
-                self.bytecode.emit_opocode(opcodes::LESS, tok.line);
-                self.bytecode.emit_opocode(opcodes::NOT, tok.line);
+                self.bytecode.emit_opcode(opcodes::LESS, tok.line);
+                self.bytecode.emit_opcode(opcodes::NOT, tok.line);
             }
-            TokenType::Less => self.bytecode.emit_opocode(opcodes::LESS, tok.line),
+            TokenType::Less => self.bytecode.emit_opcode(opcodes::LESS, tok.line),
             TokenType::LessEqual => {
-                self.bytecode.emit_opocode(opcodes::GREATER, tok.line);
-                self.bytecode.emit_opocode(opcodes::NOT, tok.line);
+                self.bytecode.emit_opcode(opcodes::GREATER, tok.line);
+                self.bytecode.emit_opcode(opcodes::NOT, tok.line);
             }
             _ => unreachable!(),
         };
@@ -338,7 +362,7 @@ impl<'t> Compiler<'t> {
     }
 
     fn variable(&mut self, tok: &Token, is_assign_target: bool) -> CompileResult {
-        // TODO: challenge 1 & 2 - optimize ways tof accessing anddefining GLOBAL variables
+        // TODO: challenge 1 & 2 - optimize ways of accessing and defining GLOBAL variables
 
         let peeked = self.peek_token();
         if is_assign_target && peeked.typ == TokenType::Equal {
@@ -346,9 +370,16 @@ impl<'t> Compiler<'t> {
             self.next_token().unwrap();
             let next_tok = self.next_token()?;
             self.expression(&next_tok)?;
-            self.bytecode.emit_set_global(tok.lexeme, tok.line);
+
+            match self.resolve_local(tok) {
+                Some(i) => self.bytecode.emit_set_local(i, tok.line),
+                None => self.bytecode.emit_set_global(tok.lexeme, tok.line),
+            }
         } else {
-            self.bytecode.emit_get_global(tok.lexeme, tok.line);
+            match self.resolve_local(tok) {
+                Some(i) => self.bytecode.emit_get_local(i, tok.line),
+                None => self.bytecode.emit_get_global(tok.lexeme, tok.line),
+            }
         }
 
         Ok(())
@@ -361,8 +392,8 @@ impl<'t> Compiler<'t> {
         self.parse_precedence(parse_precedence::UNARY, &next_tok)?;
 
         match operator_type {
-            TokenType::Minus => self.bytecode.emit_opocode(opcodes::NEGATE, tok.line),
-            TokenType::Bang => self.bytecode.emit_opocode(opcodes::NOT, tok.line),
+            TokenType::Minus => self.bytecode.emit_opcode(opcodes::NEGATE, tok.line),
+            TokenType::Bang => self.bytecode.emit_opcode(opcodes::NOT, tok.line),
             _ => unreachable!(),
         }
 
@@ -388,9 +419,9 @@ impl<'t> Compiler<'t> {
 
     fn literal(&mut self, tok: &Token) {
         match tok.typ {
-            TokenType::Nil => self.bytecode.emit_opocode(opcodes::NIL, tok.line),
-            TokenType::True => self.bytecode.emit_opocode(opcodes::TRUE, tok.line),
-            TokenType::False => self.bytecode.emit_opocode(opcodes::FALSE, tok.line),
+            TokenType::Nil => self.bytecode.emit_opcode(opcodes::NIL, tok.line),
+            TokenType::True => self.bytecode.emit_opcode(opcodes::TRUE, tok.line),
+            TokenType::False => self.bytecode.emit_opcode(opcodes::FALSE, tok.line),
             _ => unreachable!(),
         }
     }
@@ -461,7 +492,8 @@ impl<'t> Compiler<'t> {
                 | TokenType::If
                 | TokenType::While
                 | TokenType::Print
-                | TokenType::Return => break,
+                | TokenType::Return
+                | TokenType::LeftBrace => break,
                 _ => {
                     self.next_token().ok();
                 }
@@ -535,6 +567,36 @@ impl<'t> Compiler<'t> {
 
         Ok(tok)
     }
+
+    fn begin_scope(&mut self) {
+        self.scope_depth += 1;
+    }
+
+    // TODO: challenge - implement POPN instruction to pop multiple variables at once
+    fn end_scope(&mut self) {
+        let c = self
+            .locals
+            .iter()
+            .rev()
+            .filter(|l| l.depth == self.scope_depth)
+            .count();
+
+        for _ in 0..c {
+            self.bytecode.emit_opcode(opcodes::POP, 0);
+            self.locals.pop();
+        }
+
+        self.scope_depth -= 1;
+    }
+
+    fn resolve_local(&mut self, tok: &Token) -> Option<usize> {
+        self.locals
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|l| l.1.name == tok.lexeme)
+            .and_then(|o| Some(o.0))
+    }
 }
 
 struct Local<'n> {
@@ -552,12 +614,12 @@ impl<'n> Local<'n> {
 pub enum CompileErr {
     ExpectedDeclOrStmt,
     ExpectedExpr,
-    ExpectedIdentifier,
     UnexpectedToken,
     DoubleParse,
     LexError,
     InvalidAssignmentTarget,
     UnclosedBlock,
+    VariableRedeclaration,
 }
 
 type ParsePrecedence = u8;

@@ -83,11 +83,16 @@ impl<'s> Vm<'s> {
                 opcodes::POP => {
                     self.pop()?;
                 }
+                opcodes::GET_LOCAL => self.get_local()?,
+                opcodes::SET_LOCAL => self.set_local()?,
                 opcodes::GET_GLOBAL => {
                     unimplemented!("global variable expressions are unimplemented")
                 }
                 opcodes::DEFINE_GLOBAL => {
                     unimplemented!("global variable definitions are unimplemented")
+                }
+                opcodes::SET_GLOBAL => {
+                    unimplemented!("global variable expression are unimplemented")
                 }
                 opcodes::EQUAL => self.equal()?,
                 opcodes::GREATER => self.greater()?,
@@ -107,7 +112,7 @@ impl<'s> Vm<'s> {
         }
     }
 
-    #[inline(never)]
+    #[inline]
     fn push(&mut self, val: RuntimeValue) -> RuntimeResult {
         if self.sp < STACK_SIZE {
             self.stack[self.sp] = val;
@@ -118,7 +123,7 @@ impl<'s> Vm<'s> {
         }
     }
 
-    #[inline(never)]
+    #[inline]
     fn pop(&mut self) -> Result<RuntimeValue, LoxRuntimeErr> {
         if self.sp >= 1 {
             self.sp -= 1;
@@ -128,7 +133,26 @@ impl<'s> Vm<'s> {
         }
     }
 
-    #[inline(never)]
+    #[inline]
+    fn get_local(&mut self) -> RuntimeResult {
+        let slot = self.read_byte();
+        let val = self.stack[slot as usize];
+        self.push(val)?;
+
+        Ok(())
+    }
+
+    #[inline]
+    fn set_local(&mut self) -> RuntimeResult {
+        let slot = self.read_byte();
+        let val = self.peek(1)?;
+
+        self.stack[slot as usize] = val.clone();
+
+        Ok(())
+    }
+
+    #[inline]
     fn peek_mut(&mut self, distance: usize) -> Result<&mut RuntimeValue, LoxRuntimeErr> {
         if self.sp.checked_sub(distance).is_some() {
             Ok(&mut self.stack[self.sp - distance])
@@ -137,7 +161,7 @@ impl<'s> Vm<'s> {
         }
     }
 
-    #[inline(never)]
+    #[inline]
     fn peek(&self, distance: usize) -> Result<&RuntimeValue, LoxRuntimeErr> {
         if self.sp.checked_sub(distance).is_some() {
             Ok(&self.stack[self.sp - distance])
@@ -146,14 +170,14 @@ impl<'s> Vm<'s> {
         }
     }
 
-    #[inline(never)]
+    #[inline]
     fn read_byte(&mut self) -> Bytecode {
         let val = self.chunk.code[self.ip];
         self.ip += 1;
         val
     }
 
-    #[inline(never)]
+    #[inline]
     fn constant(&mut self) -> RuntimeResult {
         let index = self.read_byte();
         let value = self.chunk.constants[index as usize];
@@ -162,7 +186,7 @@ impl<'s> Vm<'s> {
         Ok(())
     }
 
-    #[inline(never)]
+    #[inline]
     fn constant_long(&mut self) -> RuntimeResult {
         let mut bytes = [0; 4];
 
@@ -177,7 +201,7 @@ impl<'s> Vm<'s> {
         Ok(())
     }
 
-    #[inline(never)]
+    #[inline]
     fn add(&mut self) -> RuntimeResult {
         let first = self.peek(2)?;
         let second = self.peek(1)?;
@@ -219,14 +243,14 @@ impl<'s> Vm<'s> {
     binary_op!(greater, >, Bool);
     binary_op!(less, <, Bool);
 
-    #[inline(never)]
+    #[inline]
     fn not(&mut self) -> RuntimeResult {
         let peeked = self.peek_mut(1)?;
         *peeked = RuntimeValue::Bool(Vm::is_falsy(*peeked));
         Ok(())
     }
 
-    #[inline(never)]
+    #[inline]
     fn equal(&mut self) -> RuntimeResult {
         // TODO: execute equal in-place
         let equal = Vm::values_equal(self.pop()?, self.pop()?);
@@ -234,7 +258,7 @@ impl<'s> Vm<'s> {
         Ok(())
     }
 
-    #[inline(never)]
+    #[inline]
     fn negate(&mut self) -> RuntimeResult {
         let peeked = self.peek_mut(1)?;
 
@@ -248,14 +272,14 @@ impl<'s> Vm<'s> {
         }
     }
 
-    #[inline(never)]
+    #[inline]
     fn print(&mut self) -> RuntimeResult {
         let val = self.pop()?;
         println!("{}", val);
         Ok(())
     }
 
-    #[inline(never)]
+    #[inline]
     fn values_equal(val1: RuntimeValue, val2: RuntimeValue) -> bool {
         match (val1, val2) {
             (RuntimeValue::Bool(b1), RuntimeValue::Bool(b2)) => b1 == b2,
@@ -268,7 +292,7 @@ impl<'s> Vm<'s> {
         }
     }
 
-    #[inline(never)]
+    #[inline]
     fn is_falsy(val: RuntimeValue) -> bool {
         match val {
             RuntimeValue::Nil | RuntimeValue::Bool(false) => true,

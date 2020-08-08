@@ -51,11 +51,10 @@ impl Chunk {
         self.emit_constant(string_val, line);
     }
 
-    pub fn emit_opocode(&mut self, opcode: Bytecode, line: usize) {
+    pub fn emit_opcode(&mut self, opcode: Bytecode, line: usize) {
         self.code.push(opcode);
         self.at_line(line, 1);
     }
-
     fn identifier_constant(&mut self, name: &str) -> usize {
         let string_ptr = StringObj::new(name);
         let string_val = RuntimeValue::String(string_ptr);
@@ -91,6 +90,18 @@ impl Chunk {
         self.at_line(line, 2);
     }
 
+    pub fn emit_get_local(&mut self, index: usize, line: usize) {
+        self.code.push(opcodes::GET_LOCAL);
+        self.code.push(index as u8);
+        self.at_line(line, 2);
+    }
+
+    pub fn emit_set_local(&mut self, index: usize, line: usize) {
+        self.code.push(opcodes::SET_LOCAL);
+        self.code.push(index as u8);
+        self.at_line(line, 2);
+    }
+
     pub fn disassemble(&self) {
         let mut opcodes = self.code.iter().enumerate();
 
@@ -106,6 +117,8 @@ impl Chunk {
                 opcodes::TRUE => println!("TRUE"),
                 opcodes::FALSE => println!("FALSE"),
                 opcodes::POP => println!("POP"),
+                opcodes::GET_LOCAL => self.disas_get_local(&mut opcodes),
+                opcodes::SET_LOCAL => self.disas_set_local(&mut opcodes),
                 opcodes::GET_GLOBAL => self.disas_get_global(&mut opcodes),
                 opcodes::DEFINE_GLOBAL => self.disas_define_global(&mut opcodes),
                 opcodes::SET_GLOBAL => self.disas_set_global(&mut opcodes),
@@ -151,6 +164,22 @@ impl Chunk {
         let val = self.constants[index];
 
         println!("CONSTANT_LONG    c[{}] = {}", index, val);
+    }
+
+    fn disas_get_local(&self, code: &mut Enumerate<Iter<u8>>) {
+        if let Some((_, index)) = code.next() {
+            println!("GET LOCAL    {}", index);
+        } else {
+            panic!("COMPILER ERROR: local variable expression operand missing");
+        }
+    }
+
+    fn disas_set_local(&self, code: &mut Enumerate<Iter<u8>>) {
+        if let Some((_, index)) = code.next() {
+            println!("SET LOCAL    {}", index);
+        } else {
+            panic!("COMPILER ERROR: local variable expression operand missing");
+        }
     }
 
     fn disas_get_global(&self, code: &mut Enumerate<Iter<u8>>) {
@@ -226,8 +255,8 @@ pub(crate) mod opcodes {
     pub const TRUE: Bytecode = 2;
     pub const FALSE: Bytecode = 3;
     pub const POP: Bytecode = 4;
-    //pub const GET_LOCAL: Bytecode = 5;
-    //pub const SET_LOCAL: Bytecode = 6;
+    pub const GET_LOCAL: Bytecode = 5;
+    pub const SET_LOCAL: Bytecode = 6;
     pub const GET_GLOBAL: Bytecode = 7;
     pub const DEFINE_GLOBAL: Bytecode = 8;
     pub const SET_GLOBAL: Bytecode = 9;
